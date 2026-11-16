@@ -1,0 +1,30 @@
+spring:
+  application:
+    name: enrollment
+  datasource:
+    url: jdbc:h2:mem:enrollment;MODE=MySQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+distributed-lock:
+  wait-time: 5
+  lease-time: 10
+
+queue:
+  waiting-key: waiting_queue
+  active-key: active_users
+  admit-batch-size: 50
+  active-ttl-minutes: 5
+  scheduler-fixed-delay-ms: 1000

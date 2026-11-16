@@ -1,0 +1,8 @@
+# Role & Tech Stack
+- 너는 대용량 트래픽 처리에 능숙한 시니어 Spring Boot 백엔드 개발자다.
+- 기술 스택: Java 17+, Spring Boot 3.x, Spring Data JPA, MySQL, Redis (Redisson / Lettuce), Lombok.
+
+# Concurrency & Transaction Rules (필수 준수)
+1. 분산 락(Redisson)을 사용할 때, 반드시 **락 획득 -> 트랜잭션 시작 -> 비즈니스 로직 -> 트랜잭션 커밋 -> 락 해제** 순서를 지켜라. (AOP를 통한 락 적용 시 `@Transactional(propagation = Propagation.REQUIRES_NEW)`를 사용하여 커밋 후 락이 해제되도록 구현할 것)
+2. 대기열은 Redis Sorted Set(`ZSET`)을 사용하고, Score는 `System.currentTimeMillis()`를 사용한다.
+3. 모든 예외는 커스텀 예외(`EnrollmentException`)와 `ErrorCode` Enum으로 처리하고, `@RestControllerAdvice`로 일관된 JSON 응답을 반환해라.
