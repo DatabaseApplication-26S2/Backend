@@ -36,6 +36,7 @@ import java.util.concurrent.TimeUnit;
 @Service
 public class QueueService {
 
+    @org.springframework.beans.factory.annotation.Autowired private com.project1.enrollment.auth.AuthService authService;
     private static final String STATUS_URL_PREFIX = "/api/v1/tickets/";
     private static final Set<TicketStatus> INCOMPLETE = EnumSet.of(
             TicketStatus.RECEIVED, TicketStatus.WAITING, TicketStatus.PROCESSING
@@ -206,7 +207,10 @@ public class QueueService {
                 continue;
             }
 
-            if (ticket.getRequestType() == TicketRequestType.ADMISSION) {
+            if (ticket.getRequestType() == TicketRequestType.LOGIN) {
+                authService.processLogin(ticket);
+                count++;
+            } else if (ticket.getRequestType() == TicketRequestType.ADMISSION) {
                 activeUsers().add(ticket.getRequesterUserId(), properties.getActiveTtlMinutes(), TimeUnit.MINUTES);
                 if (ticket.getSessionRef() != null) {
                     accessSessionRepository.findById(ticket.getSessionRef())
