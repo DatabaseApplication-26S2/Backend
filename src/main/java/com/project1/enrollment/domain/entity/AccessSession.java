@@ -104,6 +104,10 @@ public class AccessSession {
         this.enteredAt = at;
     }
 
+    public void markTokensIssued(Instant at) {
+        this.firstTokenIssuedAt = at;
+    }
+
     public void revoke(RevokeReason reason) {
         this.sessionStatus = SessionStatus.REVOKED;
         this.revokedAt = Instant.now();

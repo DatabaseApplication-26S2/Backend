@@ -25,6 +25,7 @@ public class QueueController {
     public static final String USER_ID_HEADER = "X-User-Id";
     public static final String SESSION_ID_HEADER = "X-Session-Id";
 
+    @org.springframework.beans.factory.annotation.Autowired private com.project1.enrollment.auth.AuthService authService;
     private final QueueService queueService;
 
     public QueueController(QueueService queueService) {
@@ -51,7 +52,8 @@ public class QueueController {
     }
 
     @GetMapping("/tickets/{ticketId}")
-    public ResponseEntity<Ticket> getTicket(@PathVariable String ticketId) {
+    public ResponseEntity<Ticket> getTicket(@PathVariable String ticketId, jakarta.servlet.http.HttpServletRequest request) {
+        authService.authorizeTicket(Long.parseLong(ticketId), com.project1.enrollment.auth.AuthController.cookie(request, "__Host-crs_login"), (com.project1.enrollment.auth.CurrentUser) request.getAttribute("currentUser"));
         Ticket ticket = queueService.getTicket(ticketId);
         ResponseEntity.BodyBuilder builder = ResponseEntity.ok()
                 .header(HttpHeaders.CACHE_CONTROL, "no-store");
