@@ -1,47 +1,56 @@
 # Build and integration tests
 
-Requires Java 17.
+Requires Java 21 and a running Docker engine. Integration tests start a PostgreSQL 17
+container through Testcontainers.
 
 ## Default build
+
+```sh
+./gradlew build
+```
 
 ```powershell
 .\gradlew.bat build
 ```
 
-The default build runs 21 tests. Redis calls in the existing integration suite use mocks.
-Flyway applies `src/main/resources/db/migration/V1__initial_schema.sql` to the configured H2 database.
-Hibernate uses `ddl-auto: validate` to verify entity mappings after migration.
-The migration preserves the seven tables and column mappings from the existing entities.
+The default `test` task runs 22 tests and excludes tests tagged `redis`, so a local Redis
+is not required. `BackendApplicationTests` starts its own Redis 7 container through
+Testcontainers; the other tests mock `RedissonClient` or exclude Redisson auto-configuration.
+Flyway applies `src/main/resources/db/migration/V1__schema.sql` to the Testcontainers
+PostgreSQL 17 database. Hibernate uses `ddl-auto: validate` to verify entity mappings
+against the migrated schema.
 
-V1 is validated against H2. MySQL or PostgreSQL deployment requires a matching database
-configuration and dialect-specific migration validation before use.
-The default H2 database remains in memory and is recreated on application restart.
-
-For an existing persistent database created with Hibernate, back up its data and compare
-its schema against V1 before adopting Flyway. Flyway automatic baselining is disabled.
+For an existing database that Flyway did not create, back up its data and compare its
+schema against V1 before adopting Flyway. Flyway automatic baselining is disabled.
 An existing schema that exactly matches V1 can be explicitly baselined at version 1
 using Flyway tooling. Resolve schema differences before baselining.
 Add future changes as V2 and later migrations instead of editing an applied V1.
 
 ## Real Redis integration
 
-Start a dedicated local Redis server bound to loopback on port 16379, then run
+Start a dedicated Redis bound to loopback on port 16379, then run `redisTest`.
 
-```powershell
-$env:REDIS_TEST_PORT = '16379'
-.\gradlew.bat build redisTest
+```sh
+docker run -d --name crs-redis-test -p 127.0.0.1:16379:6379 redis:7-alpine
+REDIS_TEST_PORT=16379 ./gradlew redisTest
 ```
 
-`redisTest` runs two additional tests using the real Redisson client and scheduled worker.
+```powershell
+docker run -d --name crs-redis-test -p 127.0.0.1:16379:6379 redis:7-alpine
+$env:REDIS_TEST_PORT = '16379'
+.\gradlew.bat redisTest
+```
+
+`REDIS_TEST_PORT` defaults to 16379. `redisTest` runs only the two tests tagged `redis`,
+using the real Redisson client and scheduled worker.
 They verify login ticket processing, proof-protected polling, token exchange, admission,
 Redis active-user membership, refresh, logout invalidation, and wrong-password rejection.
-The tests use unique queue keys and clean only their own prefix. The SQL database is H2
-initialized by Flyway. Redis must be running for this task to pass.
+The tests use unique queue keys and clean only their own prefix. The SQL database is a
+Testcontainers PostgreSQL 17 instance initialized by Flyway, so Docker must also be running.
+Redis must be running for this task to pass. Remove the container afterwards with
+`docker rm -f crs-redis-test`.
 
 Reports are written to `build/reports/tests/test/index.html` and
 `build/reports/tests/redisTest/index.html`.
 
-Validated locally with Java 17.0.21 and Redis 8.10.3 from the redis-windows Cygwin build,
-bound to 127.0.0.1:16379 with persistence disabled. The Windows WSL installation could
-not start its virtual machine, so a portable Redis process was used.
-Browser cookie behavior and deployment on Linux Redis remain separate integration checks.
+Browser cookie behavior remains a separate integration check.
