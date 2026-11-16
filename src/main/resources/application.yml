@@ -1,22 +1,33 @@
 spring:
   application:
-    name: enrollment
+    name: backend
+  profiles:
+    default: local            # 프로파일을 지정하지 않으면 local로 실행
   datasource:
-    url: jdbc:h2:mem:enrollment;MODE=MySQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
-    driver-class-name: org.h2.Driver
-    username: sa
-    password:
+    url: jdbc:postgresql://localhost:5433/crs
+    username: crs
+    password: crs
   jpa:
     hibernate:
-      ddl-auto: validate
-    open-in-view: false
-    properties:
-      hibernate:
-        format_sql: true
+      ddl-auto: validate      # 테이블은 Flyway가 만들고 JPA는 검사만 (D-01 확정)
+    open-in-view: false       # D-01 확정
+  flyway:
+    locations: classpath:db/migration
   data:
     redis:
       host: localhost
       port: 6379
+  jackson:
+    use-jackson2-defaults: true   # Jackson 3 기본값(키 알파벳 정렬 등) 대신 이식 전 응답 형식 유지
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+
+app:
+  frontend-origin: http://localhost:5173
 
 distributed-lock:
   wait-time: 5
