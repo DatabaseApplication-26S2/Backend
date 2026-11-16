@@ -1,0 +1,24 @@
+spring:
+  application:
+    name: backend
+  profiles:
+    default: local            # 프로파일을 지정하지 않으면 local로 실행
+  datasource:
+    url: jdbc:postgresql://localhost:5433/crs
+    username: crs
+    password: crs
+  jpa:
+    hibernate:
+      ddl-auto: validate      # 테이블은 Flyway가 만들고 JPA는 검사만 (D-01 확정)
+    open-in-view: false       # D-01 확정
+  flyway:
+    locations: classpath:db/migration
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+
+app:
+  frontend-origin: http://localhost:5173
