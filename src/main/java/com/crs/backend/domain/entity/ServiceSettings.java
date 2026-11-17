@@ -13,7 +13,8 @@ import java.time.Instant;
 
 /**
  * ENT-05 서비스 설정 (서비스 전체 1건).
- * 물리명: concurrency_limit, last_changed_by, last_changed_at
+ * 물리명: singleton, concurrency_limit, last_changed_by, last_changed_at
+ * singleton(boolean, 항상 true)은 단일 행을 강제하는 물리 장치다(구현계획 3.5). 초기 행은 V1이 넣는다.
  */
 @Entity
 @Table(name = "service_settings")
@@ -21,11 +22,11 @@ import java.time.Instant;
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class ServiceSettings {
 
-    public static final long SINGLETON_ID = 1L;
+    public static final Boolean SINGLETON_ID = Boolean.TRUE;
 
     @Id
-    @Column(name = "id", nullable = false)
-    private Long id = SINGLETON_ID;
+    @Column(name = "singleton", nullable = false, columnDefinition = "bool")
+    private Boolean singleton = SINGLETON_ID;
 
     @Column(name = "concurrency_limit", nullable = false)
     private int concurrencyLimit;
@@ -38,7 +39,7 @@ public class ServiceSettings {
 
     @Builder
     public ServiceSettings(int concurrencyLimit, String lastChangedBy, Instant lastChangedAt) {
-        this.id = SINGLETON_ID;
+        this.singleton = SINGLETON_ID;
         this.concurrencyLimit = concurrencyLimit;
         this.lastChangedBy = lastChangedBy;
         this.lastChangedAt = lastChangedAt;

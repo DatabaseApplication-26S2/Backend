@@ -21,7 +21,7 @@ public class EnrollmentId implements Serializable {
     @Column(name = "student_id", length = 20, nullable = false)
     private String studentId;
 
-    @Column(name = "course_inst_id", length = 36, nullable = false)
+    @Column(name = "course_inst_id", nullable = false, columnDefinition = "uuid")
     private String courseInstId;
 
     public EnrollmentId(String studentId, String courseInstId) {

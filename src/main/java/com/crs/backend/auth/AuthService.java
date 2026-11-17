@@ -130,6 +130,9 @@ public class AuthService {
             throw new AuthFailure(401, "E02");
         }
         record.consume(Instant.now());
+        // refresh_tokens 부분 유일 인덱스(세션당 미소비 1건, R12) 때문에 소비 표시가 새 기록 INSERT보다 먼저 DB에 반영돼야 한다.
+        // Hibernate는 한 번의 flush에서 INSERT를 UPDATE보다 먼저 실행하므로 여기서 먼저 flush한다.
+        em.flush();
         return issue(session);
     }
 

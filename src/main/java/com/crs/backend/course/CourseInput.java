@@ -17,8 +17,6 @@ public final class CourseInput {
     public static final Pattern COURSE_CODE = Pattern.compile("^[A-Za-z0-9]{1,10}$");
     private static final Set<String> CATEGORIES = Set.of("GENERAL", "MAJOR");
     private static final Set<String> EVALUATION_TYPES = Set.of("RELATIVE", "ABSOLUTE", "PASS_FAIL");
-    private static final int NAME_MAX = 100;       // courses.course_title VARCHAR(100)
-    private static final int CLASSROOM_MAX = 255;  // courses.classroom VARCHAR(255)
 
     private CourseInput() {
     }
@@ -34,7 +32,7 @@ public final class CourseInput {
     public static void requireValidFields(String name, String category, String evaluationType,
                                           Integer capacity, Integer minimumEnrollment, String classroom) {
         List<Violation> v = new ArrayList<>();
-        text(v, "/name", name, NAME_MAX);
+        text(v, "/name", name);
         oneOf(v, "/category", category, CATEGORIES);
         oneOf(v, "/evaluationType", evaluationType, EVALUATION_TYPES);
         positive(v, "/capacity", capacity);
@@ -42,19 +40,18 @@ public final class CourseInput {
         if (capacity != null && minimumEnrollment != null && capacity >= 1 && minimumEnrollment > capacity) {
             v.add(new Violation(Source.BODY, "/minimumEnrollment", "정원보다 클 수 없습니다"));
         }
-        text(v, "/classroom", classroom, CLASSROOM_MAX);
+        text(v, "/classroom", classroom);
         if (!v.isEmpty()) {
             throw CrsException.invalid(v);
         }
     }
 
-    private static void text(List<Violation> v, String field, String value, int max) {
+    /** 과목명·강의실: courses CHECK (~ '\S')와 같게 공백만 있는 값은 거절한다(text라 길이 제한은 없음) */
+    private static void text(List<Violation> v, String field, String value) {
         if (value == null) {
             v.add(new Violation(Source.BODY, field, "필수 값입니다"));
-        } else if (value.isEmpty()) {
+        } else if (value.isBlank()) {
             v.add(new Violation(Source.BODY, field, "비어 있을 수 없습니다"));
-        } else if (value.length() > max) {
-            v.add(new Violation(Source.BODY, field, max + "자 이하여야 합니다"));
         }
     }
 

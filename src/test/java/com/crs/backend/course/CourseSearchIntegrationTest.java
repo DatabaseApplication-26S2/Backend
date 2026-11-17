@@ -9,6 +9,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.crs.backend.TestFixtures;
 import com.crs.backend.TestcontainersConfiguration;
 import com.crs.backend.adapter.out.persistence.jpa.UserAccountRepository;
 import com.crs.backend.auth.AuthService;
@@ -51,6 +52,7 @@ class CourseSearchIntegrationTest {
     private static final String PROFESSOR_KIM = "qzprof1";
     private static final String PROFESSOR_PARK = "qzprof2";
     private static final String STUDENT = "qzstudent1";
+    private static final String ADMIN = "qzadmin1";
 
     @Autowired MockMvc mvc;
     @Autowired AuthService auth;
@@ -67,12 +69,12 @@ class CourseSearchIntegrationTest {
         when(activeUsers.contains(anyString())).thenReturn(false); // 기본: 아무도 화면에 입장하지 않음
 
         // 이전 실행의 테스트 데이터 정리
-        jdbc.sql("DELETE FROM enrollments WHERE course_inst_id IN (SELECT course_inst_id FROM courses WHERE course_code LIKE 'QZ%')").update();
-        jdbc.sql("DELETE FROM courses WHERE course_code LIKE 'QZ%'").update();
+        TestFixtures.deleteCourses(jdbc, "QZ"); // 내역 → 티켓 → 과목 순서(FK)
 
         user(PROFESSOR_KIM, "김민수", UserRole.PROFESSOR);
         user(PROFESSOR_PARK, "박서연", UserRole.PROFESSOR);
         user(STUDENT, "테스트 학생", UserRole.STUDENT);
+        user(ADMIN, "관리자", UserRole.ADMIN); // 관리자 배정 내역의 배정자(FK)
 
         // 일부러 코드 순서를 섞어서 넣는다(응답은 과목코드 오름차순이어야 함)
         String db = course("QZ300", PROFESSOR_KIM, "QZ 데이터베이스", "MAJOR", "RELATIVE", 40, 10, 38, "OPEN");
@@ -84,7 +86,7 @@ class CourseSearchIntegrationTest {
         jdbc.sql("""
                 INSERT INTO enrollments (student_id, course_inst_id, enroll_status, enroll_type, enrolled_at, assigned_by_user_id)
                 VALUES (:s, :c, 'ENROLLED', 'ADMIN', :t, :a)""")
-                .param("s", STUDENT).param("c", db).param("t", Timestamp.from(Instant.now())).param("a", "admin")
+                .param("s", STUDENT).param("c", db).param("t", Timestamp.from(Instant.now())).param("a", ADMIN)
                 .update();
     }
 
@@ -313,9 +315,9 @@ class CourseSearchIntegrationTest {
         String id = UUID.randomUUID().toString();
         jdbc.sql("""
                 INSERT INTO courses (course_inst_id, course_code, professor_id, course_title, course_category,
-                                     grading_type, max_capacity, min_enrollment, credit, active_cnt, classroom,
+                                     grading_type, max_capacity, min_enrollment, active_cnt, classroom,
                                      course_status, course_created_at)
-                VALUES (:id, :code, :prof, :title, :cat, :grading, :cap, :min, 3, :active, '공학관 301', :status, :now)""")
+                VALUES (:id, :code, :prof, :title, :cat, :grading, :cap, :min, :active, '공학관 301', :status, :now)""")
                 .param("id", id).param("code", code).param("prof", professorId).param("title", title)
                 .param("cat", category).param("grading", grading).param("cap", capacity).param("min", minimum)
                 .param("active", active).param("status", status).param("now", Timestamp.from(Instant.now()))
@@ -324,12 +326,27 @@ class CourseSearchIntegrationTest {
     }
 
     /** 과목코드로 내역 1건을 넣는다 */
+    /**
+     * 내역 1건. STUDENT 구분은 같은 학생·같은 과목의 근거 티켓이, ADMIN 구분은 배정 관리자가 있어야 한다(V1 CHECK·FK).
+     */
     private void enrollment(String studentId, String courseCode, String status, String type) {
+        String courseInstId = jdbc.sql("SELECT course_inst_id FROM courses WHERE course_code = :code")
+                .param("code", courseCode).query(String.class).single();
+        Long sourceTicketId = null;
+        String assignedBy = null;
+        if ("STUDENT".equals(type)) {
+            String sessionId = TestFixtures.session(jdbc, studentId, "STUDENT");
+            sourceTicketId = TestFixtures.succeededEnrollmentTicket(jdbc, studentId, sessionId, courseInstId, courseCode);
+        } else {
+            assignedBy = ADMIN;
+        }
         jdbc.sql("""
-                INSERT INTO enrollments (student_id, course_inst_id, enroll_status, enroll_type, enrolled_at)
-                SELECT :s, course_inst_id, :status, :type, :t FROM courses WHERE course_code = :code""")
-                .param("s", studentId).param("status", status).param("type", type)
-                .param("t", Timestamp.from(Instant.now())).param("code", courseCode)
+                INSERT INTO enrollments (student_id, course_inst_id, enroll_status, enroll_type, enrolled_at,
+                                         assigned_by_user_id, source_ticket_id)
+                VALUES (:s, :c, :status, :type, :t, :assignedBy, :ticket)""")
+                .param("s", studentId).param("c", courseInstId).param("status", status).param("type", type)
+                .param("t", Timestamp.from(Instant.now())).param("assignedBy", assignedBy)
+                .param("ticket", sourceTicketId)
                 .update();
     }
 

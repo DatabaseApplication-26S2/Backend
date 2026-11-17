@@ -7,6 +7,10 @@ spring:
     url: jdbc:postgresql://localhost:5433/crs
     username: crs
     password: crs
+    hikari:
+      data-source-properties:
+        # uuid 컬럼(course_inst_id, session_id 등)을 Java String으로 바인딩할 수 있게 한다
+        stringtype: unspecified
   jpa:
     hibernate:
       ddl-auto: validate      # 테이블은 Flyway가 만들고 JPA는 검사만 (D-01 확정)

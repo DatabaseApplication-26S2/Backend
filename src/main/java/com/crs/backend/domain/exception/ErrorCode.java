@@ -22,7 +22,6 @@ public enum ErrorCode {
     E14(HttpStatus.CONFLICT, "폐강 대상 아님"),
     E15(HttpStatus.CONFLICT, "수강신청 화면 미입장"),
     E99(HttpStatus.CONFLICT, "재투입 한도 소진"),
-    CREDIT_LIMIT_EXCEEDED(HttpStatus.CONFLICT, "최대 신청 가능 학점 초과"),
     LOCK_NOT_ACQUIRED(HttpStatus.TOO_MANY_REQUESTS, "분산 락 획득 실패");
 
     private final HttpStatus httpStatus;

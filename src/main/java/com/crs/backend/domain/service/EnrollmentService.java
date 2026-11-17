@@ -9,14 +9,12 @@ import com.crs.backend.domain.enums.EnrollmentStatus;
 import com.crs.backend.domain.enums.TicketResultCode;
 import com.crs.backend.domain.exception.EnrollmentException;
 import com.crs.backend.domain.exception.ErrorCode;
-import com.crs.backend.domain.policy.EnrollmentPolicy;
 import com.crs.backend.lock.DistributedLock;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.List;
 
 /**
  * 수강신청 핵심 도메인 서비스 (컨트롤러 비의존).
@@ -32,8 +30,8 @@ import java.util.List;
  * Redisson 락으로 과목 단위 직렬화 + DB PESSIMISTIC_WRITE 로 Lost Update 를 이중 차단한다.
  * <p>
  * <b>검증 순서</b>
- * ① 과목 존재(E04) ② 폐강(E05) ③ 중복 신청(E06)
- * ④ 학점 상한(CREDIT_LIMIT_EXCEEDED) ⑤ 잔여 정원(E07)
+ * ① 과목 존재(E04) ② 폐강(E05) ③ 중복 신청(E06) ④ 잔여 정원(E07)
+ * (학점 상한은 계약 범위 밖이라 두지 않는다: openapi.yaml 1절 제외 사항 "시간표·학점")
  */
 @Service
 @RequiredArgsConstructor
@@ -72,10 +70,7 @@ public class EnrollmentService {
             throw new EnrollmentException(ErrorCode.E06, "Already enrolled: " + course.getCourseCode());
         }
 
-        // ④ 학점 상한 (예: 18학점)
-        validateCreditLimit(studentId, course);
-
-        // ⑤ 잔여 정원 (active_cnt < max_capacity)
+        // ④ 잔여 정원 (active_cnt < max_capacity)
         if (!course.hasVacancy()) {
             rejectTicket(sourceTicketId, TicketResultCode.E07);
             throw new EnrollmentException(ErrorCode.E07, "No remaining seats: " + course.getCourseCode());
@@ -119,32 +114,6 @@ public class EnrollmentService {
         courseRepository.saveAndFlush(course);
 
         succeedTicket(sourceTicketId);
-    }
-
-    private void validateCreditLimit(String studentId, Course addingCourse) {
-        List<Enrollment> active = enrollmentRepository
-                .findByIdStudentIdAndEnrollStatusOrderByIdCourseInstIdAsc(studentId, EnrollmentStatus.ENROLLED);
-
-        List<String> enrolledInstIds = active.stream()
-                .map(e -> e.getId().getCourseInstId())
-                .toList();
-
-        int currentCredits = courseRepository.findByCourseInstIdIn(enrolledInstIds).stream()
-                .mapToInt(Course::getCredit)
-                .sum();
-
-        int adding = addingCourse.getCredit() > 0
-                ? addingCourse.getCredit()
-                : EnrollmentPolicy.DEFAULT_COURSE_CREDITS;
-
-        if (currentCredits + adding > EnrollmentPolicy.MAX_CREDITS_PER_STUDENT) {
-            throw new EnrollmentException(
-                    ErrorCode.CREDIT_LIMIT_EXCEEDED,
-                    "Credit limit exceeded: current=" + currentCredits
-                            + ", adding=" + adding
-                            + ", max=" + EnrollmentPolicy.MAX_CREDITS_PER_STUDENT
-            );
-        }
     }
 
     private void succeedTicket(Long ticketId) {

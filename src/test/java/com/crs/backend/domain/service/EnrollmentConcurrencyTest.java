@@ -1,5 +1,6 @@
 package com.crs.backend.domain.service;
 
+import com.crs.backend.TestFixtures;
 import com.crs.backend.TestcontainersConfiguration;
 import com.crs.backend.adapter.out.persistence.jpa.CourseJpaRepository;
 import com.crs.backend.adapter.out.persistence.jpa.EnrollmentJpaRepository;
@@ -18,11 +19,14 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -54,16 +58,29 @@ class EnrollmentConcurrencyTest {
     private EnrollmentJpaRepository enrollmentRepository;
     @Autowired
     private UserAccountRepository userAccountRepository;
+    @Autowired
+    private JdbcClient jdbc;
 
     private String courseInstId;
     private final List<String> studentIds = new ArrayList<>();
+    /** 학생별 근거 티켓(enrollments의 복합 FK·CHECK: STUDENT 내역은 같은 학생·같은 과목의 티켓이 있어야 함) */
+    private final Map<String, Long> ticketIds = new HashMap<>();
 
     @BeforeEach
     void setUp() {
-        enrollmentRepository.deleteAll();
-        courseRepository.deleteAll();
+        // FK 순서: 내역·리프레시 → 세션·티켓(서로 참조하므로 한 문장으로) → 과목 → 사용자
+        jdbc.sql("TRUNCATE enrollments, refresh_tokens, sessions, tickets, courses").update();
         userAccountRepository.deleteAll();
         studentIds.clear();
+        ticketIds.clear();
+
+        // courses.professor_id → users FK
+        userAccountRepository.save(UserAccount.builder()
+                .userId("P001")
+                .passwordHash("hash")
+                .userName("Professor")
+                .role(UserRole.PROFESSOR)
+                .build());
 
         Course course = courseRepository.save(Course.builder()
                 .courseInstId(UUID.randomUUID().toString())
@@ -74,7 +91,6 @@ class EnrollmentConcurrencyTest {
                 .gradingType(EvaluationType.ABSOLUTE)
                 .maxCapacity(CAPACITY)
                 .minEnrollment(1)
-                .credit(3)
                 .activeCnt(0)
                 .classroom("Lab-1")
                 .courseStatus(CourseStatus.OPEN)
@@ -91,6 +107,9 @@ class EnrollmentConcurrencyTest {
                     .role(UserRole.STUDENT)
                     .build());
             studentIds.add(studentId);
+            String sessionId = TestFixtures.session(jdbc, studentId, "STUDENT");
+            ticketIds.put(studentId,
+                    TestFixtures.waitingEnrollmentTicket(jdbc, studentId, sessionId, courseInstId, "CS100"));
         }
     }
 
@@ -109,7 +128,7 @@ class EnrollmentConcurrencyTest {
                 readyLatch.countDown();
                 try {
                     startLatch.await();
-                    enrollmentService.enrollStudent(studentId, courseInstId, null);
+                    enrollmentService.enrollStudent(studentId, courseInstId, ticketIds.get(studentId));
                     successCount.incrementAndGet();
                 } catch (EnrollmentException ex) {
                     if (ex.getErrorCode() == ErrorCode.E07) {

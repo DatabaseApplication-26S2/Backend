@@ -13,7 +13,6 @@ import com.crs.backend.domain.enums.EnrollmentType;
 import com.crs.backend.domain.enums.EvaluationType;
 import com.crs.backend.domain.exception.EnrollmentException;
 import com.crs.backend.domain.exception.ErrorCode;
-import com.crs.backend.domain.policy.EnrollmentPolicy;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -49,7 +48,7 @@ class EnrollmentServiceTest {
     @BeforeEach
     void setUp() {
         enrollmentService = new EnrollmentService(courseRepository, enrollmentRepository, waitingTicketRepository);
-        course = openCourse("CSE3010", 30, 0, 3);
+        course = openCourse("CSE3010", 30, 0);
     }
 
     @Test
@@ -57,9 +56,6 @@ class EnrollmentServiceTest {
         when(courseRepository.findByIdForUpdate(course.getCourseInstId())).thenReturn(Optional.of(course));
         when(enrollmentRepository.existsByIdStudentIdAndIdCourseInstIdAndEnrollStatus(
                 "20240001", course.getCourseInstId(), EnrollmentStatus.ENROLLED)).thenReturn(false);
-        when(enrollmentRepository.findByIdStudentIdAndEnrollStatusOrderByIdCourseInstIdAsc(
-                "20240001", EnrollmentStatus.ENROLLED)).thenReturn(List.of());
-        when(courseRepository.findByCourseInstIdIn(anyCollection())).thenReturn(List.of());
         when(enrollmentRepository.saveAndFlush(any(Enrollment.class))).thenAnswer(inv -> inv.getArgument(0));
         when(waitingTicketRepository.findById(1L)).thenReturn(Optional.empty());
 
@@ -85,40 +81,11 @@ class EnrollmentServiceTest {
     }
 
     @Test
-    void enroll_fails_when_credit_limit_exceeded() {
-        Course heavy = openCourse("CSE9999", 30, 0, 16);
-        when(courseRepository.findByIdForUpdate(heavy.getCourseInstId())).thenReturn(Optional.of(heavy));
-        when(enrollmentRepository.existsByIdStudentIdAndIdCourseInstIdAndEnrollStatus(
-                "20240001", heavy.getCourseInstId(), EnrollmentStatus.ENROLLED)).thenReturn(false);
-
-        Course already = openCourse("CSE1000", 30, 1, 3);
-        Enrollment existing = Enrollment.builder()
-                .id(new EnrollmentId("20240001", already.getCourseInstId()))
-                .enrollStatus(EnrollmentStatus.ENROLLED)
-                .enrollType(EnrollmentType.STUDENT)
-                .enrolledAt(Instant.now())
-                .build();
-        when(enrollmentRepository.findByIdStudentIdAndEnrollStatusOrderByIdCourseInstIdAsc(
-                "20240001", EnrollmentStatus.ENROLLED)).thenReturn(List.of(existing));
-        when(courseRepository.findByCourseInstIdIn(anyCollection())).thenReturn(List.of(already));
-
-        EnrollmentException ex = assertThrows(
-                EnrollmentException.class,
-                () -> enrollmentService.enrollStudent("20240001", heavy.getCourseInstId(), null)
-        );
-        assertEquals(ErrorCode.CREDIT_LIMIT_EXCEEDED, ex.getErrorCode());
-        assertEquals(EnrollmentPolicy.MAX_CREDITS_PER_STUDENT, 18);
-    }
-
-    @Test
     void enroll_fails_when_no_vacancy() {
-        Course full = openCourse("CSE3010", 1, 1, 3);
+        Course full = openCourse("CSE3010", 1, 1);
         when(courseRepository.findByIdForUpdate(full.getCourseInstId())).thenReturn(Optional.of(full));
         when(enrollmentRepository.existsByIdStudentIdAndIdCourseInstIdAndEnrollStatus(
                 eq("20240001"), eq(full.getCourseInstId()), eq(EnrollmentStatus.ENROLLED))).thenReturn(false);
-        when(enrollmentRepository.findByIdStudentIdAndEnrollStatusOrderByIdCourseInstIdAsc(
-                "20240001", EnrollmentStatus.ENROLLED)).thenReturn(List.of());
-        when(courseRepository.findByCourseInstIdIn(anyCollection())).thenReturn(List.of());
         when(waitingTicketRepository.findById(1L)).thenReturn(Optional.empty());
 
         EnrollmentException ex = assertThrows(
@@ -128,7 +95,7 @@ class EnrollmentServiceTest {
         assertEquals(ErrorCode.E07, ex.getErrorCode());
     }
 
-    private Course openCourse(String code, int capacity, int activeCnt, int credit) {
+    private Course openCourse(String code, int capacity, int activeCnt) {
         return Course.builder()
                 .courseInstId(UUID.randomUUID().toString())
                 .courseCode(code)
@@ -138,7 +105,6 @@ class EnrollmentServiceTest {
                 .gradingType(EvaluationType.ABSOLUTE)
                 .maxCapacity(capacity)
                 .minEnrollment(1)
-                .credit(credit)
                 .activeCnt(activeCnt)
                 .classroom("공학관 301")
                 .courseStatus(CourseStatus.OPEN)

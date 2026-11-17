@@ -10,6 +10,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.crs.backend.TestFixtures;
 import com.crs.backend.TestcontainersConfiguration;
 import com.crs.backend.adapter.out.persistence.jpa.UserAccountRepository;
 import com.crs.backend.admin.AdminEnrollmentRequest;
@@ -79,8 +80,7 @@ class CourseWriteIntegrationTest {
 
     @BeforeEach
     void seed() {
-        jdbc.sql("DELETE FROM enrollments WHERE course_inst_id IN (SELECT course_inst_id FROM courses WHERE course_code LIKE 'QZ%')").update();
-        jdbc.sql("DELETE FROM courses WHERE course_code LIKE 'QZ%'").update();
+        TestFixtures.deleteCourses(jdbc, "QZ"); // 내역 → 티켓 → 과목 순서(FK)
         user(ADMIN, "관리자", UserRole.ADMIN);
         user(PROF_KIM, "김민수", UserRole.PROFESSOR);
         user(PROF_PARK, "박서연", UserRole.PROFESSOR);
@@ -215,7 +215,8 @@ class CourseWriteIntegrationTest {
     void 정원을_바꿨고_새_정원이_현재_인원보다_작으면_409_E11() throws Exception {
         adminEnroll(STUDENT, "QZ300"); // 정원 1, 인원 2
         // QZ100을 정원 5, 인원 4로 만든 뒤 정원을 3으로 줄이면 E11
-        jdbc.sql("UPDATE courses SET max_capacity = 5, active_cnt = 4 WHERE course_code = 'QZ100'").update();
+        // (최소 수강인원도 함께 내린다: courses CHECK min_enrollment BETWEEN 1 AND max_capacity)
+        jdbc.sql("UPDATE courses SET max_capacity = 5, min_enrollment = 1, active_cnt = 4 WHERE course_code = 'QZ100'").update();
         mvc.perform(professorUpdate(PROF_KIM, "QZ100", body("과목", "MAJOR", "RELATIVE", 3, 1, "강의실")))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("E11"));
@@ -279,6 +280,14 @@ class CourseWriteIntegrationTest {
         String courseInstId = course("QZ700", PROF_KIM, 3, 1, "OPEN");
         List<String> admins = List.of("qzadm1", "qzadm2", "qzadm3"); // 관리자가 배정할 학생 3명
         for (String s : admins) user(s, s, UserRole.STUDENT);
+        // 학생 신청 15명: 계정, 세션, 근거 티켓(STUDENT 내역은 같은 학생·과목의 티켓이 있어야 함)
+        java.util.Map<String, Long> tickets = new java.util.HashMap<>();
+        for (int i = 0; i < 15; i++) {
+            String studentId = "qzc" + i;
+            user(studentId, studentId, UserRole.STUDENT);
+            String sessionId = TestFixtures.session(jdbc, studentId, "STUDENT");
+            tickets.put(studentId, TestFixtures.waitingEnrollmentTicket(jdbc, studentId, sessionId, courseInstId, "QZ700"));
+        }
 
         ExecutorService pool = Executors.newFixedThreadPool(16);
         CountDownLatch start = new CountDownLatch(1);
@@ -290,7 +299,7 @@ class CourseWriteIntegrationTest {
                 studentResults.add(pool.submit(() -> {
                     start.await();
                     try {
-                        enrollmentService.enrollStudent(studentId, courseInstId, null);
+                        enrollmentService.enrollStudent(studentId, courseInstId, tickets.get(studentId));
                         return true;
                     } catch (RuntimeException rejected) {
                         return false;
@@ -389,9 +398,9 @@ class CourseWriteIntegrationTest {
         String id = UUID.randomUUID().toString();
         jdbc.sql("""
                 INSERT INTO courses (course_inst_id, course_code, professor_id, course_title, course_category,
-                                     grading_type, max_capacity, min_enrollment, credit, active_cnt, classroom,
+                                     grading_type, max_capacity, min_enrollment, active_cnt, classroom,
                                      course_status, course_created_at)
-                VALUES (:id, :code, :prof, '과목', 'MAJOR', 'RELATIVE', :cap, :min, 3, 0, '공학관 101', :status, :now)""")
+                VALUES (:id, :code, :prof, '과목', 'MAJOR', 'RELATIVE', :cap, :min, 0, '공학관 101', :status, :now)""")
                 .param("id", id).param("code", code).param("prof", professorId).param("cap", capacity)
                 .param("min", minimum).param("status", status).param("now", Timestamp.from(Instant.now()))
                 .update();
@@ -402,8 +411,9 @@ class CourseWriteIntegrationTest {
     private void enrollment(String studentId, String courseInstId) {
         jdbc.sql("""
                 INSERT INTO enrollments (student_id, course_inst_id, enroll_status, enroll_type, enrolled_at, assigned_by_user_id)
-                VALUES (:s, :c, 'ENROLLED', 'ADMIN', :t, 'seed')""")
-                .param("s", studentId).param("c", courseInstId).param("t", Timestamp.from(Instant.now())).update();
+                VALUES (:s, :c, 'ENROLLED', 'ADMIN', :t, :admin)""")
+                .param("s", studentId).param("c", courseInstId).param("t", Timestamp.from(Instant.now()))
+                .param("admin", ADMIN).update();
         jdbc.sql("UPDATE courses SET active_cnt = active_cnt + 1 WHERE course_inst_id = :c").param("c", courseInstId).update();
     }
 

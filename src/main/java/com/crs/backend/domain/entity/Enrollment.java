@@ -34,7 +34,7 @@ public class Enrollment {
     private EnrollmentStatus enrollStatus;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "enroll_type", nullable = false)
+    @Column(name = "enroll_type", length = 20, nullable = false)
     private EnrollmentType enrollType;
 
     @Column(name = "enrolled_at", nullable = false)
