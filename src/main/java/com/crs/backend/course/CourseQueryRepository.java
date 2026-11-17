@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
@@ -57,6 +58,14 @@ public class CourseQueryRepository {
         String sql = "SELECT count(*) FROM courses c JOIN users u ON u.user_id = c.professor_id"
                 + where(category, q, params);
         return jdbc.sql(sql).params(params).query(Long.class).single();
+    }
+
+    /** 과목코드로 1건(enrolled 없음). 수정 결과 응답, 과목 상세(BE-12)에 쓴다 */
+    public Optional<CourseView> findByCode(String courseCode) {
+        Map<String, Object> params = new LinkedHashMap<>();
+        String sql = select(null, params) + " WHERE c.course_code = :courseCode";
+        params.put("courseCode", courseCode);
+        return jdbc.sql(sql).params(params).query(ROW).optional();
     }
 
     /** 교수 담당 과목 전체(폐강 포함). enrolled는 넣지 않는다 */
