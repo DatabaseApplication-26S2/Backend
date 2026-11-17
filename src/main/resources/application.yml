@@ -19,6 +19,8 @@ spring:
       port: 6379
   jackson:
     use-jackson2-defaults: true   # Jackson 3 기본값(키 알파벳 정렬 등) 대신 이식 전 응답 형식 유지
+    deserialization:
+      fail-on-unknown-properties: true   # BE-01: 정의되지 않은 본문 필드는 400 E09
 
 management:
   endpoints:

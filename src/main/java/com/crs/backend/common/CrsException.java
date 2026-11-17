@@ -1,54 +1,57 @@
 package com.crs.backend.common;
 
+import com.crs.backend.common.ApiProblem.Violation;
 import java.util.List;
 import org.springframework.http.HttpStatus;
 
 /**
- * 업무 오류. GlobalExceptionHandler(BE-01)가 Problem Details로 바꾼다.
+ * 업무 오류. GlobalExceptionHandler가 Problem Details(ApiProblem)로 바꾼다.
  * type = urn:crs:problem:{code}
- * 예) throw CrsException.of("E04", HttpStatus.NOT_FOUND, "과목을 찾을 수 없습니다");
+ *
+ * 예)
+ *   throw CrsException.of(HttpStatus.NOT_FOUND, "E04", "과목을 찾을 수 없습니다");
+ *   throw CrsException.forbidden();                       // 403 E02 FORBIDDEN
+ *   throw CrsException.activeTicket(123L);                // 409 E03 + activeTicketId
+ *   throw CrsException.invalid(Source.BODY, "/capacity", "1 이상이어야 합니다"); // 400 E09
  */
 public class CrsException extends RuntimeException {
 
-    /** E09 입력 위반 1건. message에 입력 값을 넣지 않는다(5절 9번). */
-    public record Violation(String field, String message) {}
+    private final transient ApiProblem problem;
 
-    private final String code;              // E01~E15, ACCESS_TOKEN_EXPIRED 등
-    private final HttpStatus status;        // 400, 401, 403, 404, 409 ...
-    private final String reason;            // 사람이 읽는 설명
-    private final Long activeTicketId;      // E03일 때만, 알 때만 넣는다
-    private final List<Violation> violations; // E09일 때만
+    public CrsException(ApiProblem problem) {
+        super(problem.code() + ": " + problem.detail());
+        this.problem = problem;
+    }
 
-    public CrsException(String code, HttpStatus status, String reason,
-                        Long activeTicketId, List<Violation> violations) {
-        super(code + ": " + reason);
-        this.code = code;
-        this.status = status;
-        this.reason = reason;
-        this.activeTicketId = activeTicketId;
-        this.violations = violations == null ? List.of() : List.copyOf(violations);
+    public ApiProblem toProblem() {
+        return problem;
+    }
+
+    public String getCode() {
+        return problem.code();
     }
 
     /** 일반 오류 */
-    public static CrsException of(String code, HttpStatus status, String reason) {
-        return new CrsException(code, status, reason, null, null);
+    public static CrsException of(HttpStatus status, String code, String detail) {
+        return new CrsException(ApiProblem.of(status, code, detail));
     }
 
-    /** 409 E03: 미완료 티켓이 있음 */
+    /** 403 E02 FORBIDDEN: 역할·소유권 불일치(예: 남의 과목 수정) */
+    public static CrsException forbidden() {
+        return new CrsException(new ApiProblem(403, "E02", "권한이 없습니다", "FORBIDDEN", null, null));
+    }
+
+    /** 409 E03: 미완료 티켓이 있음. 번호를 모르면 null */
     public static CrsException activeTicket(Long activeTicketId) {
-        return new CrsException("E03", HttpStatus.CONFLICT,
-                "처리 중인 요청이 있습니다", activeTicketId, null);
+        return new CrsException(new ApiProblem(409, "E03", "처리 중인 요청이 있습니다", null, activeTicketId, null));
     }
 
     /** 400 E09: 입력 검증 실패 */
     public static CrsException invalid(List<Violation> violations) {
-        return new CrsException("E09", HttpStatus.BAD_REQUEST,
-                "요청 형식이 올바르지 않습니다", null, violations);
+        return new CrsException(ApiProblem.invalid(violations));
     }
 
-    public String getCode() { return code; }
-    public HttpStatus getStatus() { return status; }
-    public String getReason() { return reason; }
-    public Long getActiveTicketId() { return activeTicketId; }
-    public List<Violation> getViolations() { return violations; }
+    public static CrsException invalid(ApiProblem.Source source, String field, String message) {
+        return new CrsException(ApiProblem.invalid(source, field, message));
+    }
 }

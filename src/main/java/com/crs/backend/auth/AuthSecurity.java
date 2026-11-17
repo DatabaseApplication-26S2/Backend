@@ -61,10 +61,8 @@ public class AuthSecurity {
                     }
                 }, response);
             } catch (AuthFailure ex) {
-                response.setStatus(ex.status());
-                response.setContentType("application/problem+json");
-                response.setHeader("Cache-Control", "no-store");
-                response.getWriter().write("{\"code\":\"" + ex.code() + "\",\"status\":" + ex.status() + "}");
+                // BE-01: 오류 본문은 ApiProblem 한 곳에서 만든다
+                com.crs.backend.common.ApiProblem.fromAuthFailure(ex.status(), ex.code()).writeTo(response);
             }
         }
     }
