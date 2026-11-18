@@ -35,7 +35,7 @@ import java.time.Instant;
 public class Course {
 
     @Id
-    @Column(name = "course_inst_id", length = 36, nullable = false)
+    @Column(name = "course_inst_id", nullable = false, columnDefinition = "uuid")
     private String courseInstId;
 
     @Column(name = "course_code", length = 10, nullable = false)
@@ -44,15 +44,15 @@ public class Course {
     @Column(name = "professor_id", length = 20, nullable = false)
     private String professorId;
 
-    @Column(name = "course_title", length = 100, nullable = false)
+    @Column(name = "course_title", nullable = false)
     private String courseTitle;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "course_category", nullable = false)
+    @Column(name = "course_category", length = 20, nullable = false)
     private CourseCategory courseCategory;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "grading_type", nullable = false)
+    @Column(name = "grading_type", length = 20, nullable = false)
     private EvaluationType gradingType;
 
     @Column(name = "max_capacity", nullable = false)
@@ -60,13 +60,6 @@ public class Course {
 
     @Column(name = "min_enrollment", nullable = false)
     private int minEnrollment;
-
-    /**
-     * 이수학점. 공식 ERD 범위 외 항목이나 수강신청 학점 상한 검증을 위해 유지한다.
-     * 기본값 3.
-     */
-    @Column(name = "credit", nullable = false)
-    private int credit;
 
     /** 저장 파생값: ENROLLED 내역 수와 동일 (INV-2) */
     @Column(name = "active_cnt", nullable = false)
@@ -95,7 +88,6 @@ public class Course {
             EvaluationType gradingType,
             int maxCapacity,
             int minEnrollment,
-            int credit,
             int activeCnt,
             String classroom,
             CourseStatus courseStatus,
@@ -110,7 +102,6 @@ public class Course {
         this.gradingType = gradingType;
         this.maxCapacity = maxCapacity;
         this.minEnrollment = minEnrollment;
-        this.credit = credit > 0 ? credit : 3;
         this.activeCnt = activeCnt;
         this.classroom = classroom;
         this.courseStatus = courseStatus;

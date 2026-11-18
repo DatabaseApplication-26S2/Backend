@@ -115,7 +115,9 @@ public class AuthService {
         String refresh = randomToken();
         em.persist(RefreshTokenRecord.builder().refreshTokenHash(hash(refresh)).sessionId(session.getSessionId())
             .issuedAt(Instant.now()).build());
-        return new IssuedTokens(tokens.encode(session), refresh, session.getExpiresAt());
+        UserAccount user = em.find(UserAccount.class, session.getUserId());
+        return new IssuedTokens(tokens.encode(session), refresh, session.getExpiresAt(),
+            user.getUserId(), user.getUserName(), user.getRole(), session.getEnteredAt());
     }
 
     @Transactional(noRollbackFor = AuthFailure.class)
@@ -130,6 +132,9 @@ public class AuthService {
             throw new AuthFailure(401, "E02");
         }
         record.consume(Instant.now());
+        // refresh_tokens 부분 유일 인덱스(세션당 미소비 1건, R12) 때문에 소비 표시가 새 기록 INSERT보다 먼저 DB에 반영돼야 한다.
+        // Hibernate는 한 번의 flush에서 INSERT를 UPDATE보다 먼저 실행하므로 여기서 먼저 flush한다.
+        em.flush();
         return issue(session);
     }
 
@@ -153,5 +158,10 @@ public class AuthService {
 
     public record LoginReceipt(String ticketId, TicketRequestType requestType, TicketStatus status,
                                Instant issuedAt, String statusUrl, String proof) {}
-    public record IssuedTokens(String accessToken, String refreshToken, Instant sessionExpiresAt) {}
+    /**
+     * 토큰 발급 결과. user*·admittedAt은 TokenResponse의 user·session에 쓴다(openapi.yaml TokenResponse).
+     * admittedAt은 이 세션의 화면 입장 시각이며 미입장 학생과 교수·관리자는 null이다.
+     */
+    public record IssuedTokens(String accessToken, String refreshToken, Instant sessionExpiresAt,
+                               String userId, String userName, UserRole role, Instant admittedAt) {}
 }

@@ -4,6 +4,8 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
@@ -16,16 +18,17 @@ import java.time.Instant;
  * 물리명: refresh_token_hash, session_id, issued_at, consumed_at
  */
 @Entity
-@Table(name = "refresh_token_records")
+@Table(name = "refresh_tokens")
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class RefreshTokenRecord {
 
     @Id
-    @Column(name = "refresh_token_hash", nullable = false)
+    @JdbcTypeCode(SqlTypes.CHAR) // char(64): SHA-256 16진
+    @Column(name = "refresh_token_hash", length = 64, nullable = false)
     private String refreshTokenHash;
 
-    @Column(name = "session_id", length = 64, nullable = false)
+    @Column(name = "session_id", nullable = false, columnDefinition = "uuid")
     private String sessionId;
 
     @Column(name = "issued_at", nullable = false)

@@ -25,6 +25,7 @@ public class AuthController {
             var receipt = auth.login(request.userId(), request.password());
             return ResponseEntity.accepted().header(HttpHeaders.SET_COOKIE, cookieHeader("__Host-crs_login", receipt.proof(), 600))
                 .header(HttpHeaders.CACHE_CONTROL, "no-store").header(HttpHeaders.LOCATION, receipt.statusUrl())
+                .header(HttpHeaders.RETRY_AFTER, "2") // openapi.yaml 5절: 202 접수증에는 Retry-After: 2
                 .body(Map.of("ticketId", receipt.ticketId(), "requestType", receipt.requestType(),
                     "status", receipt.status(), "submittedAt", receipt.issuedAt(), "statusUrl", receipt.statusUrl(), "credentialExpiresAt", receipt.issuedAt().plusSeconds(300), "proofExpiresAt", receipt.issuedAt().plusSeconds(600)));
         } finally { if (request.password() != null) Arrays.fill(request.password(), '\0'); }
@@ -47,7 +48,27 @@ public class AuthController {
         return ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, "no-store")
             .header(HttpHeaders.SET_COOKIE, cookieHeader("__Host-crs_refresh", tokens.refreshToken(),
                 Duration.between(Instant.now(), tokens.sessionExpiresAt()).getSeconds()))
-            .body(Map.of("accessToken", tokens.accessToken(), "tokenType", "Bearer", "expiresIn", 900));
+            .body(tokenResponse(tokens));
+    }
+    /**
+     * openapi.yaml TokenResponse: {accessToken, tokenType, expiresIn, user{userId,name,role}, session{expiresAt,admittedAt}}
+     * 프런트는 user·session으로 역할별 화면과 입장 상태를 정하므로 둘 다 필수다. admittedAt은 null일 수 있어 Map.of를 쓰지 않는다.
+     */
+    private static Map<String, Object> tokenResponse(AuthService.IssuedTokens tokens) {
+        Map<String, Object> user = new LinkedHashMap<>();
+        user.put("userId", tokens.userId());
+        user.put("name", tokens.userName());
+        user.put("role", tokens.role());
+        Map<String, Object> session = new LinkedHashMap<>();
+        session.put("expiresAt", tokens.sessionExpiresAt());
+        session.put("admittedAt", tokens.admittedAt());
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("accessToken", tokens.accessToken());
+        body.put("tokenType", "Bearer");
+        body.put("expiresIn", 900);
+        body.put("user", user);
+        body.put("session", session);
+        return body;
     }
     public record LoginRequest(String userId, char[] password) {
         @Override public String toString() { return "LoginRequest[redacted]"; }

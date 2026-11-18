@@ -22,13 +22,13 @@ import java.time.Instant;
  * session_status, revoked_at, revoke_reason, first_token_issued_at, entered_at
  */
 @Entity
-@Table(name = "access_sessions")
+@Table(name = "sessions")
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class AccessSession {
 
     @Id
-    @Column(name = "session_id", length = 64, nullable = false)
+    @Column(name = "session_id", nullable = false, columnDefinition = "uuid")
     private String sessionId;
 
     @Column(name = "user_id", length = 20, nullable = false)
@@ -48,14 +48,14 @@ public class AccessSession {
     private Instant expiresAt;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "session_status", nullable = false)
+    @Column(name = "session_status", length = 20, nullable = false)
     private SessionStatus sessionStatus;
 
     @Column(name = "revoked_at")
     private Instant revokedAt;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "revoke_reason")
+    @Column(name = "revoke_reason", length = 20)
     private RevokeReason revokeReason;
 
     @Column(name = "first_token_issued_at")

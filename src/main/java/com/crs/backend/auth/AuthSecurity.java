@@ -3,6 +3,7 @@ package com.crs.backend.auth;
 import com.crs.backend.domain.enums.UserRole;
 import jakarta.servlet.*;
 import jakarta.servlet.http.*;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.*;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -14,23 +15,26 @@ import java.io.IOException;
 @Configuration
 public class AuthSecurity {
     @Bean
-    SecurityFilterChain security(HttpSecurity http, AuthService auth) throws Exception {
+    SecurityFilterChain security(HttpSecurity http, AuthService auth,
+                                 @Value("${app.frontend-origin}") String frontendOrigin) throws Exception {
         return http.csrf(csrf -> csrf.disable()).sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(a -> a.anyRequest().permitAll())
-            .addFilterBefore(new AuthFilter(auth), UsernamePasswordAuthenticationFilter.class).build();
+            .addFilterBefore(new AuthFilter(auth, frontendOrigin), UsernamePasswordAuthenticationFilter.class).build();
     }
     static class AuthFilter extends OncePerRequestFilter {
         private final AuthService auth;
-        AuthFilter(AuthService auth) { this.auth = auth; }
+        /** 허용 Origin은 프런트엔드 출처 하나다(app.frontend-origin, 구현계획 5절 3번) */
+        private final String frontendOrigin;
+        AuthFilter(AuthService auth, String frontendOrigin) { this.auth = auth; this.frontendOrigin = frontendOrigin; }
         @Override protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
                 throws ServletException, IOException {
             if (!request.getRequestURI().startsWith("/api/v1/")) { chain.doFilter(request, response); return; }
             try {
                 String origin = request.getHeader("Origin");
-                String expected = request.getScheme() + "://" + request.getServerName()
-                    + ((request.getServerPort() == 80 || request.getServerPort() == 443) ? "" : ":" + request.getServerPort());
-                if (!request.getMethod().equals("GET") && origin != null && !origin.equals(expected))
-                    throw new AuthFailure(403, "E02");
+                // Vite 프록시는 브라우저의 Origin(http://localhost:5173)을 그대로 넘기므로 백엔드 자기 주소가 아니라
+                // 설정된 프런트엔드 출처와 비교한다. 위반은 403 E02 + reason CSRF_CHECK_FAILED(openapi.yaml 4.4)
+                if (!request.getMethod().equals("GET") && origin != null && !origin.equals(frontendOrigin))
+                    throw new AuthFailure(403, "CSRF_CHECK_FAILED");
                 String bearer = request.getHeader("Authorization");
                 CurrentUser user = null;
                 if (bearer != null) {
@@ -61,10 +65,8 @@ public class AuthSecurity {
                     }
                 }, response);
             } catch (AuthFailure ex) {
-                response.setStatus(ex.status());
-                response.setContentType("application/problem+json");
-                response.setHeader("Cache-Control", "no-store");
-                response.getWriter().write("{\"code\":\"" + ex.code() + "\",\"status\":" + ex.status() + "}");
+                // BE-01: 오류 본문은 ApiProblem 한 곳에서 만든다
+                com.crs.backend.common.ApiProblem.fromAuthFailure(ex.status(), ex.code()).writeTo(response);
             }
         }
     }
