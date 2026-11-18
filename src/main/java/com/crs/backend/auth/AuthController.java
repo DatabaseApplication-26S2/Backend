@@ -25,6 +25,7 @@ public class AuthController {
             var receipt = auth.login(request.userId(), request.password());
             return ResponseEntity.accepted().header(HttpHeaders.SET_COOKIE, cookieHeader("__Host-crs_login", receipt.proof(), 600))
                 .header(HttpHeaders.CACHE_CONTROL, "no-store").header(HttpHeaders.LOCATION, receipt.statusUrl())
+                .header(HttpHeaders.RETRY_AFTER, "2") // openapi.yaml 5절: 202 접수증에는 Retry-After: 2
                 .body(Map.of("ticketId", receipt.ticketId(), "requestType", receipt.requestType(),
                     "status", receipt.status(), "submittedAt", receipt.issuedAt(), "statusUrl", receipt.statusUrl(), "credentialExpiresAt", receipt.issuedAt().plusSeconds(300), "proofExpiresAt", receipt.issuedAt().plusSeconds(600)));
         } finally { if (request.password() != null) Arrays.fill(request.password(), '\0'); }
