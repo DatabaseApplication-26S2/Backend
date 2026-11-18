@@ -1,0 +1,74 @@
+package com.crs.backend.application.handler;
+
+import com.crs.backend.adapter.out.persistence.jpa.WaitingTicketJpaRepository;
+import com.crs.backend.application.port.EnrollmentWriter;
+import com.crs.backend.application.port.TicketHandler;
+import com.crs.backend.domain.entity.WaitingTicket;
+import com.crs.backend.domain.enums.TicketRequestType;
+import com.crs.backend.domain.enums.TicketResultCode;
+import com.crs.backend.domain.enums.TicketStatus;
+import com.crs.backend.queue.RedisWaitingOrderCopy;
+import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.EnumSet;
+
+@Component
+public class EnrollmentTicketHandler implements TicketHandler {
+
+    private static final EnumSet<TicketStatus> INCOMPLETE = EnumSet.of(
+            TicketStatus.RECEIVED, TicketStatus.WAITING, TicketStatus.PROCESSING
+    );
+
+    private final WaitingTicketJpaRepository waitingTicketRepository;
+    private final EnrollmentWriter enrollmentWriter;
+    private final RedisWaitingOrderCopy waitingOrderCopy;
+
+    public EnrollmentTicketHandler(
+            WaitingTicketJpaRepository waitingTicketRepository,
+            EnrollmentWriter enrollmentWriter,
+            RedisWaitingOrderCopy waitingOrderCopy
+    ) {
+        this.waitingTicketRepository = waitingTicketRepository;
+        this.enrollmentWriter = enrollmentWriter;
+        this.waitingOrderCopy = waitingOrderCopy;
+    }
+
+    @Override
+    public TicketRequestType supports() {
+        return TicketRequestType.ENROLLMENT;
+    }
+
+    @Override
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void handle(WaitingTicket snapshot, int expectedGeneration) {
+        WaitingTicket ticket = waitingTicketRepository.findByIdForUpdate(snapshot.getTicketId()).orElse(null);
+        if (ticket == null
+                || ticket.getGenerationNo() != expectedGeneration
+                || ticket.getStatus() != TicketStatus.PROCESSING) {
+            return;
+        }
+
+        if (ticket.getTargetCourseInstId() != null
+                && waitingTicketRepository.existsEarlierIncompleteForCourse(
+                ticket.getTargetCourseInstId(), ticket.getTicketId(), INCOMPLETE)) {
+            ticket.returnToWaiting();
+            waitingTicketRepository.saveAndFlush(ticket);
+            waitingOrderCopy.publishAfterCommit(ticket.getTicketId());
+            return;
+        }
+
+        TicketResultCode code = enrollmentWriter.enrollStudent(
+                ticket.getRequesterUserId(),
+                ticket.getTargetCourseInstId(),
+                ticket.getTicketId()
+        );
+        if (code == TicketResultCode.OK) {
+            ticket.succeedIfGeneration(expectedGeneration);
+        } else {
+            ticket.rejectIfGeneration(expectedGeneration, code);
+        }
+        waitingTicketRepository.saveAndFlush(ticket);
+    }
+}

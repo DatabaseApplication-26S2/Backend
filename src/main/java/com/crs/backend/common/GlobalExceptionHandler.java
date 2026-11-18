@@ -53,7 +53,8 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(EnrollmentException.class)
     public ResponseEntity<Map<String, Object>> enrollment(EnrollmentException ex) {
         ErrorCode code = ex.getErrorCode();
-        return new ApiProblem(code.getHttpStatus().value(), code.name(), ex.getMessage(), null, null, null)
+        // E03이면 activeTicketId를 함께 보낸다(ApiProblem이 E03 외에는 지운다)
+        return new ApiProblem(code.getHttpStatus().value(), code.name(), ex.getMessage(), null, ex.getActiveTicketId(), null)
                 .toResponse();
     }
 

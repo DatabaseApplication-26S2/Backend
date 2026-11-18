@@ -1,138 +1,57 @@
 package com.crs.backend.domain.service;
 
-import com.crs.backend.adapter.out.persistence.jpa.CourseJpaRepository;
 import com.crs.backend.adapter.out.persistence.jpa.EnrollmentJpaRepository;
-import com.crs.backend.adapter.out.persistence.jpa.WaitingTicketJpaRepository;
-import com.crs.backend.domain.entity.Course;
+import com.crs.backend.application.port.EnrollmentWriter;
 import com.crs.backend.domain.entity.Enrollment;
 import com.crs.backend.domain.enums.EnrollmentStatus;
 import com.crs.backend.domain.enums.TicketResultCode;
 import com.crs.backend.domain.exception.EnrollmentException;
 import com.crs.backend.domain.exception.ErrorCode;
-import com.crs.backend.lock.DistributedLock;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
-
 /**
- * 수강신청 핵심 도메인 서비스 (컨트롤러 비의존).
- * <p>
- * <b>락·트랜잭션 경계</b>
- * <pre>
- *   @DistributedLock(lock:course:{courseInstId})  // AOP: 락 획득
- *     → @Transactional(REQUIRES_NEW)              // TX 시작
- *     → 검증 + active_cnt 갱신 + Enrollment 저장
- *     → TX 커밋
- *   → AOP: 락 해제
- * </pre>
- * Redisson 락으로 과목 단위 직렬화 + DB PESSIMISTIC_WRITE 로 Lost Update 를 이중 차단한다.
- * <p>
- * <b>검증 순서</b>
- * ① 과목 존재(E04) ② 폐강(E05) ③ 중복 신청(E06) ④ 잔여 정원(E07)
- * (학점 상한은 계약 범위 밖이라 두지 않는다: openapi.yaml 1절 제외 사항 "시간표·학점")
+ * 수강신청 도메인 파사드 (동시성 테스트·직접 호출용).
+ * HTTP 신청·취소는 대기열 티켓 → 워커 → EnrollmentWriter 경로를 쓴다.
  */
 @Service
 @RequiredArgsConstructor
 public class EnrollmentService {
 
-    private final CourseJpaRepository courseRepository;
+    private final EnrollmentWriter enrollmentWriter;
     private final EnrollmentJpaRepository enrollmentRepository;
-    private final WaitingTicketJpaRepository waitingTicketRepository;
 
-    /**
-     * 학생 수강신청 실행.
-     *
-     * @param studentId      학번(user_id)
-     * @param courseInstId   과목 인스턴스ID (락 키)
-     * @param sourceTicketId 근거 티켓번호 (없으면 null)
-     */
-    @DistributedLock(key = "#courseInstId", keyPrefix = "lock:course:")
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Enrollment enrollStudent(String studentId, String courseInstId, Long sourceTicketId) {
-        // 락 내부에서 최신 정원/인원을 읽기 위해 비관적 락
-        Course course = courseRepository.findByIdForUpdate(courseInstId)
-                .orElseThrow(() -> new EnrollmentException(ErrorCode.E04));
-
-        // ①② 폐강
-        if (!course.isOpen()) {
-            rejectTicket(sourceTicketId, TicketResultCode.E05);
-            throw new EnrollmentException(ErrorCode.E05, "Course is closed: " + course.getCourseCode());
+        TicketResultCode code = enrollmentWriter.enrollStudent(studentId, courseInstId, sourceTicketId);
+        if (code != TicketResultCode.OK) {
+            throw toException(code);
         }
-
-        // ③ 중복 신청
-        boolean alreadyEnrolled = enrollmentRepository.existsByIdStudentIdAndIdCourseInstIdAndEnrollStatus(
-                studentId, courseInstId, EnrollmentStatus.ENROLLED
-        );
-        if (alreadyEnrolled) {
-            rejectTicket(sourceTicketId, TicketResultCode.E06);
-            throw new EnrollmentException(ErrorCode.E06, "Already enrolled: " + course.getCourseCode());
-        }
-
-        // ④ 잔여 정원 (active_cnt < max_capacity)
-        if (!course.hasVacancy()) {
-            rejectTicket(sourceTicketId, TicketResultCode.E07);
-            throw new EnrollmentException(ErrorCode.E07, "No remaining seats: " + course.getCourseCode());
-        }
-
-        course.increaseActiveCnt();
-        courseRepository.saveAndFlush(course);
-
-        Enrollment enrollment = Enrollment.studentEnrollment(studentId, courseInstId, sourceTicketId);
-        Enrollment saved = enrollmentRepository.saveAndFlush(enrollment);
-
-        succeedTicket(sourceTicketId);
-        return saved;
-    }
-
-    /**
-     * 학생 수강 취소 실행.
-     */
-    @DistributedLock(key = "#courseInstId", keyPrefix = "lock:course:")
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void cancelStudent(String studentId, String courseInstId, Long sourceTicketId) {
-        Course course = courseRepository.findByIdForUpdate(courseInstId)
-                .orElseThrow(() -> new EnrollmentException(ErrorCode.E04));
-
-        if (!course.isOpen()) {
-            rejectTicket(sourceTicketId, TicketResultCode.E05);
-            throw new EnrollmentException(ErrorCode.E05);
-        }
-
-        Enrollment enrollment = enrollmentRepository
+        return enrollmentRepository
                 .findByIdStudentIdAndIdCourseInstIdAndEnrollStatus(
                         studentId, courseInstId, EnrollmentStatus.ENROLLED
                 )
-                .orElseThrow(() -> {
-                    rejectTicket(sourceTicketId, TicketResultCode.E08);
-                    return new EnrollmentException(ErrorCode.E08);
-                });
-
-        enrollmentRepository.delete(enrollment);
-        course.decreaseActiveCnt();
-        courseRepository.saveAndFlush(course);
-
-        succeedTicket(sourceTicketId);
+                .orElseThrow(() -> new EnrollmentException(ErrorCode.E99, "enrollment missing after OK"));
     }
 
-    private void succeedTicket(Long ticketId) {
-        if (ticketId == null) {
-            return;
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void cancelStudent(String studentId, String courseInstId, Long sourceTicketId) {
+        TicketResultCode code = enrollmentWriter.cancelStudent(studentId, courseInstId, sourceTicketId);
+        if (code != TicketResultCode.OK) {
+            throw toException(code);
         }
-        waitingTicketRepository.findById(ticketId).ifPresent(ticket -> {
-            ticket.succeed();
-            waitingTicketRepository.save(ticket);
-        });
     }
 
-    private void rejectTicket(Long ticketId, TicketResultCode code) {
-        if (ticketId == null) {
-            return;
-        }
-        waitingTicketRepository.findById(ticketId).ifPresent(ticket -> {
-            ticket.reject(code);
-            waitingTicketRepository.save(ticket);
-        });
+    private EnrollmentException toException(TicketResultCode code) {
+        return switch (code) {
+            case E04 -> new EnrollmentException(ErrorCode.E04);
+            case E05 -> new EnrollmentException(ErrorCode.E05);
+            case E06 -> new EnrollmentException(ErrorCode.E06);
+            case E07 -> new EnrollmentException(ErrorCode.E07);
+            case E08 -> new EnrollmentException(ErrorCode.E08);
+            default -> new EnrollmentException(ErrorCode.E99, "Unexpected result: " + code);
+        };
     }
 }
