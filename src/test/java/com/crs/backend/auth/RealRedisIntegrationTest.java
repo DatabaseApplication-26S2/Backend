@@ -26,6 +26,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @Tag("redis")
+@org.testcontainers.junit.jupiter.Testcontainers
+@org.springframework.test.context.ActiveProfiles("demo")
 @SpringBootTest(properties = {
     "spring.data.redis.host=127.0.0.1",
     "queue.scheduler-fixed-delay-ms=100"
@@ -33,9 +35,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Import(TestcontainersConfiguration.class)
 @AutoConfigureMockMvc
 class RealRedisIntegrationTest {
+    @org.testcontainers.junit.jupiter.Container
+    static final org.testcontainers.containers.GenericContainer<?> redisContainer =
+        new org.testcontainers.containers.GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
     private static final String PREFIX = "auth-test:" + UUID.randomUUID();
     @DynamicPropertySource static void properties(DynamicPropertyRegistry registry) {
-        registry.add("spring.data.redis.port", () -> System.getenv().getOrDefault("REDIS_TEST_PORT", "16379"));
+        registry.add("spring.data.redis.host", redisContainer::getHost);
+        registry.add("spring.data.redis.port", () -> redisContainer.getMappedPort(6379));
         registry.add("queue.waiting-key", () -> PREFIX + ":waiting");
         registry.add("queue.active-key", () -> PREFIX + ":active");
     }
@@ -46,28 +52,27 @@ class RealRedisIntegrationTest {
     @Autowired Flyway flyway;
 
     @BeforeEach void seed() {
-        users.save(UserAccount.builder().userId("redis-student").userName("Redis integration")
-            .passwordHash(new BCryptPasswordEncoder(10).encode("Demo-password1!")).role(UserRole.STUDENT).build());
+        assertTrue(users.existsById("20260001"));
     }
     @AfterEach void cleanup() {
         redis.getKeys().deleteByPattern(PREFIX + "*");
     }
     private String[] login(String password) throws Exception {
-        var response = mvc.perform(post("/api/v1/auth/login").contentType("application/json")
-            .content(json.writeValueAsString(java.util.Map.of("userId", "redis-student", "password", password))))
+        var response = mvc.perform(post("/api/v1/auth/login").header("Origin", "http://localhost:5173").header("X-CSRF-Protection", "1").contentType("application/json")
+            .content(json.writeValueAsString(java.util.Map.of("userId", "20260001", "password", password))))
             .andExpect(status().isAccepted()).andReturn().getResponse();
         return new String[] {json.readTree(response.getContentAsString()).get("ticketId").asText(),
             response.getCookie("__Host-crs_login").getValue()};
     }
     @Test void schedulerProcessesLoginAdmissionRefreshAndLogoutWithRealRedis() throws Exception {
-        assertEquals("1", flyway.info().current().getVersion().getVersion());
+        assertEquals("900", flyway.info().current().getVersion().getVersion());
         assertTrue(redis.getRedisNodes(RedisNodes.SINGLE).pingAll());
         String[] login = login("Demo-password1!");
         Cookie proof = new Cookie("__Host-crs_login", login[1]);
         await().atMost(Duration.ofSeconds(10)).untilAsserted(() ->
             mvc.perform(get("/api/v1/tickets/" + login[0]).cookie(proof))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.result.code").value("OK")));
-        var exchange = mvc.perform(post("/api/v1/auth/login-tickets/" + login[0] + "/tokens").cookie(proof))
+        var exchange = mvc.perform(post("/api/v1/auth/login-tickets/" + login[0] + "/tokens").header("Origin", "http://localhost:5173").header("X-CSRF-Protection", "1").cookie(proof))
             .andExpect(status().isOk()).andReturn().getResponse();
         String access = json.readTree(exchange.getContentAsString()).get("accessToken").asText();
         Cookie refresh = new Cookie("__Host-crs_refresh", exchange.getCookie("__Host-crs_refresh").getValue());
@@ -77,11 +82,14 @@ class RealRedisIntegrationTest {
         await().atMost(Duration.ofSeconds(10)).untilAsserted(() ->
             mvc.perform(get("/api/v1/tickets/" + admissionId).header("Authorization", "Bearer " + access))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.result.code").value("OK")));
-        assertTrue(redis.getSetCache(PREFIX + ":active").contains("redis-student"));
-        var rotated = mvc.perform(post("/api/v1/auth/refresh").cookie(refresh))
+        mvc.perform(post("/api/v1/admission").header("Authorization", "Bearer " + access))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.admittedAt").isString());
+        var rotated = mvc.perform(post("/api/v1/auth/refresh").header("Origin", "http://localhost:5173").header("X-CSRF-Protection", "1").cookie(refresh))
             .andExpect(status().isOk()).andReturn().getResponse();
+        ContractSchemaTest.assertValid("TokenResponse", rotated.getContentAsString());
+        assertFalse(json.readTree(rotated.getContentAsString()).get("session").get("admittedAt").isNull());
         Cookie next = new Cookie("__Host-crs_refresh", rotated.getCookie("__Host-crs_refresh").getValue());
-        mvc.perform(post("/api/v1/auth/logout").cookie(next)).andExpect(status().isNoContent());
+        mvc.perform(post("/api/v1/auth/logout").header("Origin", "http://localhost:5173").header("X-CSRF-Protection", "1").cookie(next)).andExpect(status().isNoContent());
         mvc.perform(post("/api/v1/admission").header("Authorization", "Bearer " + access))
             .andExpect(status().isUnauthorized());
     }

@@ -27,16 +27,17 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Redis ZSET 기반 대기열.
+ * 기존 수강신청 접수와 LOGIN/ADMISSION DB 처리 어댑터.
  * <ul>
  *   <li>member = ticketId (양의 10진수 문자열)</li>
- *   <li>score = {@code System.currentTimeMillis()}</li>
+ *   <li>인증 티켓 score = ticketId; 입장 상태는 sessions.entered_at</li>
  * </ul>
  */
 @Service
 public class QueueService {
 
     @org.springframework.beans.factory.annotation.Autowired private com.crs.backend.auth.AuthService authService;
+    @org.springframework.beans.factory.annotation.Autowired private org.springframework.jdbc.core.JdbcTemplate jdbc;
     private static final String STATUS_URL_PREFIX = "/api/v1/tickets/";
     private static final Set<TicketStatus> INCOMPLETE = EnumSet.of(
             TicketStatus.RECEIVED, TicketStatus.WAITING, TicketStatus.PROCESSING
@@ -64,53 +65,21 @@ public class QueueService {
      */
     @Transactional
     public Object requestAdmission(String userId, String sessionId) {
-        validateUserId(userId);
-
-        if (isActive(userId)) {
-            Instant admittedAt = accessSessionRepository.findById(sessionId)
-                    .map(AccessSession::getEnteredAt)
-                    .orElse(Instant.now());
-            return new AdmissionState(admittedAt != null ? admittedAt : Instant.now());
-        }
-
-        if (waitingTicketRepository.existsByRequesterUserIdAndStatusIn(userId, INCOMPLETE)) {
-            throw new EnrollmentException(ErrorCode.E03);
-        }
-
-        WaitingTicket ticket = waitingTicketRepository.save(
-                WaitingTicket.admission(userId, sessionId)
-        );
-
-        // ZSET: score = 현재 시각, member = ticketId
-        waitingQueue().add((double) System.currentTimeMillis(), ticket.ticketIdAsString());
-
-        Integer rank = waitingQueue().rank(ticket.ticketIdAsString());
-        TicketReceiptStatus receiptStatus = rank == null
-                ? TicketReceiptStatus.RECEIVED
-                : TicketReceiptStatus.WAITING;
-
-        return new TicketReceipt(
-                ticket.ticketIdAsString(),
-                TicketRequestType.ADMISSION,
-                receiptStatus,
-                ticket.getTicketIssuedAt(),
-                STATUS_URL_PREFIX + ticket.ticketIdAsString()
-        );
+        return authService.requestAdmission(userId, sessionId);
     }
 
     /**
      * GET /tickets/{ticketId}
-     * queuePosition = ZRANK + 1 (WAITING일 때만)
+     * WAITING 순번은 동일 DB 스냅샷에서 앞선 WAITING 수 + 1이다.
      */
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public Ticket getTicket(String ticketId) {
         Long id = parseTicketId(ticketId);
         WaitingTicket ticket = waitingTicketRepository.findById(id)
                 .orElseThrow(() -> new EnrollmentException(ErrorCode.E02, "Ticket not found"));
 
         if (ticket.getStatus() == TicketStatus.WAITING) {
-            Integer rank = waitingQueue().rank(ticket.ticketIdAsString());
-            Integer queuePosition = rank == null ? null : rank + 1;
+            Integer queuePosition = jdbc.queryForObject("SELECT count(*)+1 FROM tickets WHERE status_cd='WAITING' AND ticket_id<?", Integer.class, id);
             return toTicketDto(ticket, queuePosition, null);
         }
 
@@ -144,10 +113,6 @@ public class QueueService {
 
     public void removeFromWaitingQueue(String ticketId) {
         waitingQueue().remove(ticketId);
-    }
-
-    public boolean isActive(String userId) {
-        return activeUsers().contains(userId);
     }
 
     private TicketReceipt createCourseTicket(
@@ -189,45 +154,30 @@ public class QueueService {
     }
 
     /**
-     * 1초 스케줄: ZPOPMIN 상위 N개 → active_users(TTL) + 티켓/세션 입장 반영.
+     * 인증 티켓만 DB에서 처리한다. 공용 TicketHandler 디스패처 연동 시 이 어댑터를 대체한다.
      */
     @Transactional
     public int admitWaitingUsers() {
-        Collection<String> popped = waitingQueue().pollFirst(properties.getAdmitBatchSize());
-        if (popped == null || popped.isEmpty()) {
-            return 0;
-        }
-
-        Instant now = Instant.now();
-        int count = 0;
-        for (String ticketIdStr : popped) {
-            Long ticketId = Long.valueOf(ticketIdStr);
-            WaitingTicket ticket = waitingTicketRepository.findById(ticketId).orElse(null);
-            if (ticket == null || !ticket.isIncomplete()) {
-                continue;
-            }
-
-            if (ticket.getRequestType() == TicketRequestType.LOGIN) {
-                authService.processLogin(ticket);
-                count++;
-            } else if (ticket.getRequestType() == TicketRequestType.ADMISSION) {
-                activeUsers().add(ticket.getRequesterUserId(), properties.getActiveTtlMinutes(), TimeUnit.MINUTES);
-                if (ticket.getSessionRef() != null) {
-                    accessSessionRepository.findById(ticket.getSessionRef())
-                            .ifPresent(session -> session.admit(now));
+        // Transitional LOGIN/ADMISSION adapter until the shared TicketHandler dispatcher lands.
+        // DB owns acceptance and progress; Redis outages cannot strand authentication tickets.
+        int limit = jdbc.queryForObject("SELECT concurrency_limit FROM service_settings WHERE singleton=true FOR NO KEY UPDATE", Integer.class);
+        int occupied = jdbc.queryForObject("SELECT count(*) FROM tickets WHERE status_cd='PROCESSING'", Integer.class);
+        var ids = jdbc.queryForList("SELECT ticket_id FROM tickets WHERE status_cd='WAITING' AND request_type IN ('LOGIN','ADMISSION') ORDER BY ticket_id LIMIT ? FOR UPDATE", Long.class, Math.max(0, limit-occupied));
+        for (Long id : ids) {
+            WaitingTicket ticket = waitingTicketRepository.findById(id).orElseThrow();
+            ticket.markProcessing();
+            waitingTicketRepository.flush();
+            if (ticket.getRequestType() == TicketRequestType.LOGIN) authService.processLogin(ticket);
+            else authService.processAdmission(ticket);
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization() {
+                @Override public void afterCommit() {
+                    try { waitingQueue().remove(Long.toString(id)); }
+                    catch (RuntimeException ex) { org.slf4j.LoggerFactory.getLogger(QueueService.class).warn("Queue mirror removal failed for ticket {}", id); }
                 }
-                ticket.succeed();
-                count++;
-            } else {
-                // ENROLLMENT/CANCELLATION 은 처리 슬롯으로 PROCESSING 전환 (실행은 Enrollment 쪽)
-                ticket.markProcessing();
-                count++;
-            }
-            waitingTicketRepository.save(ticket);
+            });
         }
-        return count;
+        return ids.size();
     }
-
     private Ticket toTicketDto(WaitingTicket ticket, Integer queuePosition, TicketResult result) {
         return new Ticket(
                 ticket.ticketIdAsString(),
@@ -242,10 +192,6 @@ public class QueueService {
 
     private RScoredSortedSet<String> waitingQueue() {
         return redissonClient.getScoredSortedSet(properties.getWaitingKey());
-    }
-
-    private RSetCache<String> activeUsers() {
-        return redissonClient.getSetCache(properties.getActiveKey());
     }
 
     private Long parseTicketId(String ticketId) {

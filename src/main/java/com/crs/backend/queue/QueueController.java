@@ -53,7 +53,7 @@ public class QueueController {
 
     @GetMapping("/tickets/{ticketId}")
     public ResponseEntity<Ticket> getTicket(@PathVariable String ticketId, jakarta.servlet.http.HttpServletRequest request) {
-        authService.authorizeTicket(Long.parseLong(ticketId), com.crs.backend.auth.AuthController.cookie(request, "__Host-crs_login"), (com.crs.backend.auth.CurrentUser) request.getAttribute("currentUser"));
+        authService.authorizeTicket(com.crs.backend.auth.AuthController.parseTicketId(ticketId), com.crs.backend.auth.AuthController.cookie(request, "__Host-crs_login"), (com.crs.backend.auth.CurrentUser) request.getAttribute("currentUser"));
         Ticket ticket = queueService.getTicket(ticketId);
         ResponseEntity.BodyBuilder builder = ResponseEntity.ok()
                 .header(HttpHeaders.CACHE_CONTROL, "no-store");

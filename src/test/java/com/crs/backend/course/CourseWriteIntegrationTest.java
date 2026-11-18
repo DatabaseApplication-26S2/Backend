@@ -49,6 +49,7 @@ import org.springframework.test.web.servlet.MockMvc;
  * BE-09 관리자 배정(POST /admin/enrollments)과 교수 과목 수정(PUT /professor/courses/{code}).
  * 학생 수강신청과 같은 과목 잠금을 쓰는지 동시 실행으로도 확인한다(INV-2: active_cnt = ENROLLED 행 수).
  */
+
 @SpringBootTest(properties = {
         "spring.task.scheduling.enabled=false",
         "queue.scheduler-fixed-delay-ms=3600000",
@@ -56,7 +57,7 @@ import org.springframework.test.web.servlet.MockMvc;
         "distributed-lock.lease-time=30",
         "spring.autoconfigure.exclude=org.redisson.spring.starter.RedissonAutoConfigurationV2,org.redisson.spring.starter.RedissonAutoConfigurationV4"
 })
-@ActiveProfiles("concurrency-test")
+@ActiveProfiles({"test", "concurrency-test"})
 @Import({ConcurrencyTestConfig.class, TestcontainersConfiguration.class})
 @AutoConfigureMockMvc
 class CourseWriteIntegrationTest {

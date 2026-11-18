@@ -16,7 +16,7 @@ import static org.mockito.Mockito.when;
 class ActiveUserInterceptorTest {
 
     @Mock
-    private QueueService queueService;
+    private com.crs.backend.auth.AuthService queueService;
 
     private ActiveUserInterceptor interceptor;
 
@@ -28,8 +28,8 @@ class ActiveUserInterceptorTest {
     @Test
     void allows_request_when_user_is_active() {
         MockHttpServletRequest request = new MockHttpServletRequest();
-        request.addHeader(QueueController.USER_ID_HEADER, "user-1");
-        when(queueService.isActive("user-1")).thenReturn(true);
+        request.addHeader(QueueController.USER_ID_HEADER, "user-1"); request.addHeader(QueueController.SESSION_ID_HEADER, "session-1");
+        when(queueService.isAdmitted("user-1", "session-1")).thenReturn(true);
 
         assertTrue(interceptor.preHandle(request, new MockHttpServletResponse(), new Object()));
     }
@@ -37,8 +37,8 @@ class ActiveUserInterceptorTest {
     @Test
     void rejects_request_when_user_is_not_active() {
         MockHttpServletRequest request = new MockHttpServletRequest();
-        request.addHeader(QueueController.USER_ID_HEADER, "user-1");
-        when(queueService.isActive("user-1")).thenReturn(false);
+        request.addHeader(QueueController.USER_ID_HEADER, "user-1"); request.addHeader(QueueController.SESSION_ID_HEADER, "session-1");
+        when(queueService.isAdmitted("user-1", "session-1")).thenReturn(false);
 
         assertThrows(
                 QueueNotAllowedException.class,

@@ -40,6 +40,7 @@ import org.springframework.test.web.servlet.MockMvc;
  * 실제 PostgreSQL(Testcontainers)에 테스트 데이터를 넣고, 실제 로그인 토큰으로 호출한다.
  * 다른 테스트의 데이터와 섞이지 않게 테스트 과목코드는 모두 QZ로 시작하고 검색어 q=QZ로 조회한다.
  */
+@org.springframework.test.context.ActiveProfiles("test")
 @SpringBootTest(properties = {
         "queue.scheduler-fixed-delay-ms=3600000",
         "spring.autoconfigure.exclude=org.redisson.spring.starter.RedissonAutoConfigurationV2,org.redisson.spring.starter.RedissonAutoConfigurationV4"
@@ -61,12 +62,12 @@ class CourseSearchIntegrationTest {
     @Autowired UserAccountRepository users;
     @Autowired JdbcClient jdbc;
 
-    private RSetCache<String> activeUsers;
+    private boolean admitted;
 
     @BeforeEach
     void seed() {
-        activeUsers = redis.getSetCache("active_users");
-        when(activeUsers.contains(anyString())).thenReturn(false); // 기본: 아무도 화면에 입장하지 않음
+
+        admitted = false; // 기본: 아무도 화면에 입장하지 않음
 
         // 이전 실행의 테스트 데이터 정리
         TestFixtures.deleteCourses(jdbc, "QZ"); // 내역 → 티켓 → 과목 순서(FK)
@@ -92,7 +93,7 @@ class CourseSearchIntegrationTest {
 
     @AfterEach
     void resetRedisStub() {
-        when(activeUsers.contains(anyString())).thenReturn(false);
+        admitted = false;
     }
 
     // ---------------- 성공 ----------------
@@ -130,7 +131,7 @@ class CourseSearchIntegrationTest {
 
     @Test
     void 입장한_학생은_enrolled를_받는다() throws Exception {
-        when(activeUsers.contains(STUDENT)).thenReturn(true);
+        admitted = true;
         mvc.perform(get("/api/v1/courses").param("q", "QZ").header("Authorization", bearer(STUDENT)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.items[*].courseCode").value(contains("QZ100", "QZ200", "QZ300", "QZ400")))
@@ -239,7 +240,7 @@ class CourseSearchIntegrationTest {
 
     @Test
     void 교수가_아니면_403_E02_FORBIDDEN() throws Exception {
-        when(activeUsers.contains(STUDENT)).thenReturn(true);
+        admitted = true;
         mvc.perform(get("/api/v1/professor/courses").header("Authorization", bearer(STUDENT)))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("E02"))
@@ -260,7 +261,7 @@ class CourseSearchIntegrationTest {
         // seed: QZ300(ADMIN 배정, ENROLLED). 여기에 학생 신청 1건과 폐강으로 CLOSED된 1건을 더한다
         enrollment(STUDENT, "QZ100", "ENROLLED", "STUDENT");
         enrollment(STUDENT, "QZ200", "CLOSED", "STUDENT");
-        when(activeUsers.contains(STUDENT)).thenReturn(true);
+        admitted = true;
 
         mvc.perform(get("/api/v1/me/enrollments").header("Authorization", bearer(STUDENT)))
                 .andExpect(status().isOk())
@@ -320,7 +321,7 @@ class CourseSearchIntegrationTest {
 
     @Test
     void 과목_상세_입장한_학생은_enrolled를_받는다() throws Exception {
-        when(activeUsers.contains(STUDENT)).thenReturn(true);
+        admitted = true;
         String token = bearer(STUDENT);
         mvc.perform(get("/api/v1/courses/QZ300").header("Authorization", token))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.enrolled").value(true));
@@ -425,6 +426,7 @@ class CourseSearchIntegrationTest {
         when(waiting.pollFirst(anyInt())).thenReturn(List.of(receipt.ticketId()));
         queue.admitWaitingUsers();
         when(waiting.pollFirst(anyInt())).thenReturn(List.of());
+        if (admitted && userId.equals(STUDENT)) jdbc.sql("UPDATE sessions SET entered_at=clock_timestamp() WHERE login_ticket_id=:id").param("id", Long.parseLong(receipt.ticketId())).update();
         return "Bearer " + auth.exchange(Long.parseLong(receipt.ticketId()), receipt.proof()).accessToken();
     }
 }

@@ -58,8 +58,16 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(AuthFailure.class)
-    public ResponseEntity<Map<String, Object>> auth(AuthFailure ex) {
-        return ApiProblem.fromAuthFailure(ex.status(), ex.code()).toResponse();
+    public ResponseEntity<Map<String, Object>> auth(AuthFailure ex, jakarta.servlet.http.HttpServletRequest request) {
+        var headers = new org.springframework.http.HttpHeaders();
+        headers.setContentType(org.springframework.http.MediaType.parseMediaType(ApiProblem.MEDIA_TYPE));
+        headers.setCacheControl("no-store");
+        if (ex.status() == 401) {
+            headers.set("WWW-Authenticate", request.getHeader("Authorization") == null ? "Bearer" : "Bearer error=\"invalid_token\"");
+            if (request.getRequestURI().equals("/api/v1/auth/refresh"))
+                headers.add("Set-Cookie", "__Host-crs_refresh=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax");
+        }
+        return ResponseEntity.status(ex.status()).headers(headers).body(ex.body());
     }
 
     @ExceptionHandler(QueueNotAllowedException.class)
