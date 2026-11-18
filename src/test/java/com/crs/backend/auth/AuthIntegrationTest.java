@@ -15,11 +15,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.test.web.servlet.MockMvc;
-import org.redisson.api.*;
-import java.util.*;
+import java.util.List;
 import java.util.concurrent.*;
-import static org.mockito.Mockito.*;
-import static org.mockito.ArgumentMatchers.*;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -40,7 +37,6 @@ class AuthIntegrationTest {
     @Autowired WaitingTicketJpaRepository tickets;
     @Autowired LoginCredentialStore credentials;
     @Autowired QueueService queue;
-    @Autowired RedissonClient redis;
     @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
     @Autowired org.springframework.transaction.support.TransactionTemplate tx;
     @jakarta.persistence.PersistenceContext jakarta.persistence.EntityManager em;
@@ -54,10 +50,9 @@ class AuthIntegrationTest {
         return auth.login("20240001", password.toCharArray());
     }
     private void process(AuthService.LoginReceipt receipt) {
-        RScoredSortedSet<String> set = redis.getScoredSortedSet("waiting_queue");
-        when(set.pollFirst(anyInt())).thenReturn(List.of(receipt.ticketId()));
+        // DB claim 디스패처가 WAITING LOGIN 티켓을 잡아 processLogin 한다 (Redis poll 의존 제거)
+        assertNotNull(receipt.ticketId());
         queue.admitWaitingUsers();
-        when(set.pollFirst(anyInt())).thenReturn(List.of());
     }
     @Test void httpLoginTokensProtectedApiAndLogout() throws Exception {
         var result = mvc.perform(post("/api/v1/auth/login").header("Origin", "http://localhost:5173").header("X-CSRF-Protection", "1").contentType("application/json")
