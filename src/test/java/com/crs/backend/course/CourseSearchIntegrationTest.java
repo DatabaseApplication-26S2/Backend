@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -366,6 +367,78 @@ class CourseSearchIntegrationTest {
     void 과목_상세_토큰_없으면_401() throws Exception {
         mvc.perform(get("/api/v1/courses/QZ300"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    // ---------------- BE-15 계약 엄격성 ----------------
+
+    @Test
+    void 정의되지_않은_쿼리_파라미터는_400_E09() throws Exception {
+        mvc.perform(get("/api/v1/courses?q=QZ&sort=name").header("Authorization", bearer(PROFESSOR_KIM)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("E09"))
+                .andExpect(jsonPath("$.violations[0].source").value("QUERY"))
+                .andExpect(jsonPath("$.violations[0].field").value("sort"));
+        // 쿼리를 받지 않는 연산
+        mvc.perform(get("/api/v1/professor/courses?page=1").header("Authorization", bearer(PROFESSOR_KIM)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.violations[0].field").value("page"));
+        // 값 없는 파라미터도 정의되지 않았으면 E09
+        mvc.perform(get("/api/v1/courses/QZ300?debug").header("Authorization", bearer(PROFESSOR_KIM)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.violations[0].field").value("debug"));
+        // 인증 전 연산도 같다
+        mvc.perform(post("/api/v1/auth/login?remember=1").contentType("application/json")
+                        .content("{\"userId\":\"" + STUDENT + "\",\"password\":\"" + PASSWORD + "\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.violations[0].field").value("remember"));
+    }
+
+    @Test
+    void 같은_쿼리_파라미터를_반복하면_400_E09() throws Exception {
+        mvc.perform(get("/api/v1/courses?page=1&page=2").header("Authorization", bearer(PROFESSOR_KIM)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.violations[0].source").value("QUERY"))
+                .andExpect(jsonPath("$.violations[0].field").value("page"))
+                .andExpect(jsonPath("$.violations[0].message").value("같은 쿼리 파라미터를 반복할 수 없습니다"));
+    }
+
+    @Test
+    void 본문을_받지_않는_요청에_본문이_있으면_400_E09() throws Exception {
+        String token = bearer(PROFESSOR_KIM);
+        mvc.perform(get("/api/v1/courses").header("Authorization", token).contentType("application/json").content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.violations[0].source").value("BODY"))
+                .andExpect(jsonPath("$.violations[0].field").value(""));
+        mvc.perform(post("/api/v1/auth/logout").contentType("application/json").content("{\"all\":true}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.violations[0].source").value("BODY"));
+    }
+
+    @Test
+    void 허용된_쿼리만_쓰면_통과한다() throws Exception {
+        mvc.perform(get("/api/v1/courses?category=MAJOR&q=QZ&page=1").header("Authorization", bearer(PROFESSOR_KIM)))
+                .andExpect(status().isOk());
+        // URI 템플릿 문자열로 넘기면 MockMvc가 %25를 한 번 더 인코딩하므로 URI 객체로 넘긴다(실제 요청: q=%25 → q=%)
+        mvc.perform(get(java.net.URI.create("/api/v1/courses?q=%25")).header("Authorization", bearer(PROFESSOR_KIM)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[0].courseCode").value("QZ400"));
+    }
+
+    @Test
+    void 판정_순서_역할과_입장_검사가_쿼리_검사보다_먼저다() throws Exception {
+        // 입장하지 않은 학생: 정의되지 않은 쿼리가 있어도 먼저 409 E15
+        mvc.perform(get("/api/v1/courses?sort=name").header("Authorization", bearer(STUDENT)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("E15"));
+        // 학생이 교수 API를 호출: 쿼리 오류보다 403이 먼저
+        when(activeUsers.contains(STUDENT)).thenReturn(true);
+        mvc.perform(get("/api/v1/professor/courses?page=1").header("Authorization", bearer(STUDENT)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.reason").value("FORBIDDEN"));
+        // 토큰 없음: 401이 먼저, WWW-Authenticate 포함
+        mvc.perform(get("/api/v1/courses?sort=name"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().string("WWW-Authenticate", "Bearer"));
     }
 
     // ---------------- 도우미 ----------------
