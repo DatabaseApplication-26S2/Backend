@@ -142,7 +142,7 @@ public class WaitingTicket {
                 .requesterUserId(requesterUserId)
                 .sessionRef(sessionRef)
                 .ticketIssuedAt(Instant.now())
-                .status(TicketStatus.WAITING)
+                .status(TicketStatus.RECEIVED)
                 .retryCount(0)
                 .generationNo(0)
                 .build();
@@ -161,7 +161,26 @@ public class WaitingTicket {
                 .targetCourseInstId(courseInstId)
                 .courseCodeSnapshot(courseCode)
                 .ticketIssuedAt(Instant.now())
-                .status(TicketStatus.WAITING)
+                .status(TicketStatus.RECEIVED)
+                .retryCount(0)
+                .generationNo(0)
+                .build();
+    }
+
+    public static WaitingTicket cancellation(
+            String requesterUserId,
+            String sessionRef,
+            String courseInstId,
+            String courseCode
+    ) {
+        return WaitingTicket.builder()
+                .requestType(TicketRequestType.CANCELLATION)
+                .requesterUserId(requesterUserId)
+                .sessionRef(sessionRef)
+                .targetCourseInstId(courseInstId)
+                .courseCodeSnapshot(courseCode)
+                .ticketIssuedAt(Instant.now())
+                .status(TicketStatus.RECEIVED)
                 .retryCount(0)
                 .generationNo(0)
                 .build();
@@ -171,21 +190,59 @@ public class WaitingTicket {
         this.status = TicketStatus.WAITING;
     }
 
-    public void markProcessing() {
+    public void claim(String workerRef, String slotClaimRef, Instant leaseUntil) {
         this.status = TicketStatus.PROCESSING;
         this.processingStartedAt = Instant.now();
+        this.generationNo = this.generationNo + 1;
+        this.ownerWorkerRef = workerRef;
+        this.slotClaimRef = slotClaimRef;
+        this.leaseInfo = leaseUntil != null ? leaseUntil.toString() : null;
+    }
+
+    public void markProcessing() {
+        claim("legacy", null, Instant.now().plusSeconds(30));
+    }
+
+    public boolean succeedIfGeneration(int expectedGeneration) {
+        if (status != TicketStatus.PROCESSING || generationNo != expectedGeneration) {
+            return false;
+        }
+        succeed();
+        return true;
+    }
+
+    public boolean rejectIfGeneration(int expectedGeneration, TicketResultCode code) {
+        if (status != TicketStatus.PROCESSING || generationNo != expectedGeneration) {
+            return false;
+        }
+        reject(code);
+        return true;
+    }
+
+    public void returnToWaiting() {
+        this.status = TicketStatus.WAITING;
+        this.processingStartedAt = null;
+        this.ownerWorkerRef = null;
+        this.slotClaimRef = null;
+        this.leaseInfo = null;
     }
 
     public void succeed() {
         this.status = TicketStatus.SUCCEEDED;
         this.resultCode = TicketResultCode.OK;
         this.processingFinishedAt = Instant.now();
+        this.ownerWorkerRef = null;
+        this.slotClaimRef = null;
+        this.leaseInfo = null;
     }
 
     public void reject(TicketResultCode code) {
         this.status = TicketStatus.REJECTED;
         this.resultCode = code;
         this.processingFinishedAt = Instant.now();
+        this.ownerWorkerRef = null;
+        this.slotClaimRef = null;
+        this.leaseInfo = null;
     }
 
     public boolean isIncomplete() {

@@ -18,7 +18,7 @@ public class ApiExceptionHandler {
     @ExceptionHandler(EnrollmentException.class)
     public ResponseEntity<Map<String, Object>> handleEnrollment(EnrollmentException ex) {
         ErrorCode code = ex.getErrorCode();
-        return problem(code, ex.getMessage());
+        return problem(code, ex.getMessage(), ex.getActiveTicketId());
     }
 
     @ExceptionHandler(QueueNotAllowedException.class)
@@ -37,12 +37,19 @@ public class ApiExceptionHandler {
     }
 
     private ResponseEntity<Map<String, Object>> problem(ErrorCode code, String detail) {
+        return problem(code, detail, null);
+    }
+
+    private ResponseEntity<Map<String, Object>> problem(ErrorCode code, String detail, Long activeTicketId) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("type", "urn:crs:problem:" + code.name());
         body.put("title", code.getMessage());
         body.put("status", code.getHttpStatus().value());
         body.put("detail", detail);
         body.put("code", code.name());
+        if (activeTicketId != null) {
+            body.put("activeTicketId", String.valueOf(activeTicketId));
+        }
         return ResponseEntity.status(code.getHttpStatus())
                 .header(HttpHeaders.CACHE_CONTROL, "no-store")
                 .header(HttpHeaders.CONTENT_TYPE, "application/problem+json")

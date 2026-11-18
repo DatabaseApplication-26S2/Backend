@@ -6,7 +6,6 @@ import com.crs.backend.adapter.out.persistence.jpa.CourseJpaRepository;
 import com.crs.backend.domain.entity.Course;
 import com.crs.backend.domain.exception.EnrollmentException;
 import com.crs.backend.domain.exception.ErrorCode;
-import com.crs.backend.domain.service.EnrollmentService;
 import com.crs.backend.queue.QueueController;
 import com.crs.backend.queue.QueueService;
 import org.springframework.http.HttpHeaders;
@@ -21,23 +20,16 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * 수강신청 API — ENR-02-01, ENR-02-02
- * 기준 경로: /api/v1/me/enrollments
+ * ENR-02-01·02 — 202 접수만. 실행은 디스패처·워커가 처리한다.
  */
 @RestController
 @RequestMapping("/api/v1/me/enrollments")
 public class EnrollmentController {
 
-    private final EnrollmentService enrollmentService;
     private final CourseJpaRepository courseRepository;
     private final QueueService queueService;
 
-    public EnrollmentController(
-            EnrollmentService enrollmentService,
-            CourseJpaRepository courseRepository,
-            QueueService queueService
-    ) {
-        this.enrollmentService = enrollmentService;
+    public EnrollmentController(CourseJpaRepository courseRepository, QueueService queueService) {
         this.courseRepository = courseRepository;
         this.queueService = queueService;
     }
@@ -62,12 +54,6 @@ public class EnrollmentController {
                 course.getCourseCode()
         );
 
-        try {
-            enrollmentService.enrollStudent(userId, course.getCourseInstId(), Long.valueOf(receipt.ticketId()));
-        } finally {
-            queueService.removeFromWaitingQueue(receipt.ticketId());
-        }
-
         return ResponseEntity.status(HttpStatus.ACCEPTED)
                 .header(HttpHeaders.LOCATION, receipt.statusUrl())
                 .header(HttpHeaders.RETRY_AFTER, "2")
@@ -87,11 +73,6 @@ public class EnrollmentController {
         TicketReceipt receipt = queueService.createCancellationTicket(
                 userId, sessionId, course.getCourseInstId(), course.getCourseCode()
         );
-        try {
-            enrollmentService.cancelStudent(userId, course.getCourseInstId(), Long.valueOf(receipt.ticketId()));
-        } finally {
-            queueService.removeFromWaitingQueue(receipt.ticketId());
-        }
 
         return ResponseEntity.status(HttpStatus.ACCEPTED)
                 .header(HttpHeaders.LOCATION, receipt.statusUrl())

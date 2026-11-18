@@ -3,65 +3,55 @@ package com.crs.backend.queue;
 import com.crs.backend.adapter.in.web.dto.AdmissionState;
 import com.crs.backend.adapter.in.web.dto.Ticket;
 import com.crs.backend.adapter.in.web.dto.TicketReceipt;
-import com.crs.backend.adapter.in.web.dto.TicketReceiptStatus;
 import com.crs.backend.adapter.in.web.dto.TicketResult;
 import com.crs.backend.adapter.out.persistence.jpa.AccessSessionRepository;
 import com.crs.backend.adapter.out.persistence.jpa.WaitingTicketJpaRepository;
+import com.crs.backend.application.TicketDispatcher;
+import com.crs.backend.application.port.TicketIntake;
 import com.crs.backend.domain.entity.AccessSession;
 import com.crs.backend.domain.entity.WaitingTicket;
-import com.crs.backend.domain.enums.TicketRequestType;
-import com.crs.backend.domain.enums.TicketResultCode;
 import com.crs.backend.domain.enums.TicketStatus;
 import com.crs.backend.domain.exception.EnrollmentException;
 import com.crs.backend.domain.exception.ErrorCode;
-import org.redisson.api.RScoredSortedSet;
 import org.redisson.api.RSetCache;
 import org.redisson.api.RedissonClient;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
-import java.util.Collection;
-import java.util.EnumSet;
-import java.util.Set;
-import java.util.concurrent.TimeUnit;
 
 /**
- * Redis ZSET 기반 대기열.
- * <ul>
- *   <li>member = ticketId (양의 10진수 문자열)</li>
- *   <li>score = {@code System.currentTimeMillis()}</li>
- * </ul>
+ * 대기열 파사드.
+ * 신청·취소 접수는 TicketIntake, 배정은 TicketDispatcher(DB claim).
+ * LOGIN 접수는 AuthService가 담당한다.
  */
 @Service
 public class QueueService {
-
-    @org.springframework.beans.factory.annotation.Autowired private com.crs.backend.auth.AuthService authService;
-    private static final String STATUS_URL_PREFIX = "/api/v1/tickets/";
-    private static final Set<TicketStatus> INCOMPLETE = EnumSet.of(
-            TicketStatus.RECEIVED, TicketStatus.WAITING, TicketStatus.PROCESSING
-    );
 
     private final RedissonClient redissonClient;
     private final QueueProperties properties;
     private final WaitingTicketJpaRepository waitingTicketRepository;
     private final AccessSessionRepository accessSessionRepository;
+    private final TicketIntake ticketIntake;
+    private final TicketDispatcher ticketDispatcher;
 
     public QueueService(
             RedissonClient redissonClient,
             QueueProperties properties,
             WaitingTicketJpaRepository waitingTicketRepository,
-            AccessSessionRepository accessSessionRepository
+            AccessSessionRepository accessSessionRepository,
+            TicketIntake ticketIntake,
+            @Lazy TicketDispatcher ticketDispatcher
     ) {
         this.redissonClient = redissonClient;
         this.properties = properties;
         this.waitingTicketRepository = waitingTicketRepository;
         this.accessSessionRepository = accessSessionRepository;
+        this.ticketIntake = ticketIntake;
+        this.ticketDispatcher = ticketDispatcher;
     }
 
-    /**
-     * POST /admission — 이미 입장이면 AdmissionState, 아니면 ADMISSION 티켓 접수.
-     */
     @Transactional
     public Object requestAdmission(String userId, String sessionId) {
         validateUserId(userId);
@@ -73,34 +63,12 @@ public class QueueService {
             return new AdmissionState(admittedAt != null ? admittedAt : Instant.now());
         }
 
-        if (waitingTicketRepository.existsByRequesterUserIdAndStatusIn(userId, INCOMPLETE)) {
-            throw new EnrollmentException(ErrorCode.E03);
-        }
-
-        WaitingTicket ticket = waitingTicketRepository.save(
-                WaitingTicket.admission(userId, sessionId)
-        );
-
-        // ZSET: score = 현재 시각, member = ticketId
-        waitingQueue().add((double) System.currentTimeMillis(), ticket.ticketIdAsString());
-
-        Integer rank = waitingQueue().rank(ticket.ticketIdAsString());
-        TicketReceiptStatus receiptStatus = rank == null
-                ? TicketReceiptStatus.RECEIVED
-                : TicketReceiptStatus.WAITING;
-
-        return new TicketReceipt(
-                ticket.ticketIdAsString(),
-                TicketRequestType.ADMISSION,
-                receiptStatus,
-                ticket.getTicketIssuedAt(),
-                STATUS_URL_PREFIX + ticket.ticketIdAsString()
-        );
+        return ticketIntake.intakeAdmission(userId, sessionId);
     }
 
     /**
      * GET /tickets/{ticketId}
-     * queuePosition = ZRANK + 1 (WAITING일 때만)
+     * queuePosition = DB에서 앞선 WAITING 수 + 1
      */
     @Transactional(readOnly = true)
     public Ticket getTicket(String ticketId) {
@@ -108,127 +76,18 @@ public class QueueService {
         WaitingTicket ticket = waitingTicketRepository.findById(id)
                 .orElseThrow(() -> new EnrollmentException(ErrorCode.E02, "Ticket not found"));
 
+        Integer queuePosition = null;
+        TicketResult result = null;
+
         if (ticket.getStatus() == TicketStatus.WAITING) {
-            Integer rank = waitingQueue().rank(ticket.ticketIdAsString());
-            Integer queuePosition = rank == null ? null : rank + 1;
-            return toTicketDto(ticket, queuePosition, null);
+            long ahead = waitingTicketRepository.countWaitingAhead(ticket.getTicketId());
+            queuePosition = (int) ahead + 1;
         }
 
         if (ticket.getStatus() == TicketStatus.SUCCEEDED || ticket.getStatus() == TicketStatus.REJECTED) {
-            TicketResult result = new TicketResult(ticket.getResultCode(), ticket.getProcessingFinishedAt());
-            return toTicketDto(ticket, null, result);
+            result = new TicketResult(ticket.getResultCode(), ticket.getProcessingFinishedAt());
         }
 
-        return toTicketDto(ticket, null, null);
-    }
-
-    @Transactional
-    public TicketReceipt createEnrollmentTicket(
-            String userId,
-            String sessionId,
-            String courseInstId,
-            String courseCode
-    ) {
-        return createCourseTicket(userId, sessionId, courseInstId, courseCode, TicketRequestType.ENROLLMENT);
-    }
-
-    @Transactional
-    public TicketReceipt createCancellationTicket(
-            String userId,
-            String sessionId,
-            String courseInstId,
-            String courseCode
-    ) {
-        return createCourseTicket(userId, sessionId, courseInstId, courseCode, TicketRequestType.CANCELLATION);
-    }
-
-    public void removeFromWaitingQueue(String ticketId) {
-        waitingQueue().remove(ticketId);
-    }
-
-    public boolean isActive(String userId) {
-        return activeUsers().contains(userId);
-    }
-
-    private TicketReceipt createCourseTicket(
-            String userId,
-            String sessionId,
-            String courseInstId,
-            String courseCode,
-            TicketRequestType type
-    ) {
-        validateUserId(userId);
-        if (waitingTicketRepository.existsByRequesterUserIdAndStatusIn(userId, INCOMPLETE)) {
-            throw new EnrollmentException(ErrorCode.E03);
-        }
-
-        WaitingTicket ticket = waitingTicketRepository.save(
-                type == TicketRequestType.ENROLLMENT
-                        ? WaitingTicket.enrollment(userId, sessionId, courseInstId, courseCode)
-                        : WaitingTicket.builder()
-                        .requestType(TicketRequestType.CANCELLATION)
-                        .requesterUserId(userId)
-                        .sessionRef(sessionId)
-                        .targetCourseInstId(courseInstId)
-                        .courseCodeSnapshot(courseCode)
-                        .ticketIssuedAt(Instant.now())
-                        .status(TicketStatus.WAITING)
-                        .retryCount(0)
-                        .generationNo(0)
-                        .build()
-        );
-        waitingQueue().add((double) System.currentTimeMillis(), ticket.ticketIdAsString());
-
-        return new TicketReceipt(
-                ticket.ticketIdAsString(),
-                type,
-                TicketReceiptStatus.WAITING,
-                ticket.getTicketIssuedAt(),
-                STATUS_URL_PREFIX + ticket.ticketIdAsString()
-        );
-    }
-
-    /**
-     * 1초 스케줄: ZPOPMIN 상위 N개 → active_users(TTL) + 티켓/세션 입장 반영.
-     */
-    @Transactional
-    public int admitWaitingUsers() {
-        Collection<String> popped = waitingQueue().pollFirst(properties.getAdmitBatchSize());
-        if (popped == null || popped.isEmpty()) {
-            return 0;
-        }
-
-        Instant now = Instant.now();
-        int count = 0;
-        for (String ticketIdStr : popped) {
-            Long ticketId = Long.valueOf(ticketIdStr);
-            WaitingTicket ticket = waitingTicketRepository.findById(ticketId).orElse(null);
-            if (ticket == null || !ticket.isIncomplete()) {
-                continue;
-            }
-
-            if (ticket.getRequestType() == TicketRequestType.LOGIN) {
-                authService.processLogin(ticket);
-                count++;
-            } else if (ticket.getRequestType() == TicketRequestType.ADMISSION) {
-                activeUsers().add(ticket.getRequesterUserId(), properties.getActiveTtlMinutes(), TimeUnit.MINUTES);
-                if (ticket.getSessionRef() != null) {
-                    accessSessionRepository.findById(ticket.getSessionRef())
-                            .ifPresent(session -> session.admit(now));
-                }
-                ticket.succeed();
-                count++;
-            } else {
-                // ENROLLMENT/CANCELLATION 은 처리 슬롯으로 PROCESSING 전환 (실행은 Enrollment 쪽)
-                ticket.markProcessing();
-                count++;
-            }
-            waitingTicketRepository.save(ticket);
-        }
-        return count;
-    }
-
-    private Ticket toTicketDto(WaitingTicket ticket, Integer queuePosition, TicketResult result) {
         return new Ticket(
                 ticket.ticketIdAsString(),
                 ticket.getRequestType(),
@@ -240,8 +99,40 @@ public class QueueService {
         );
     }
 
-    private RScoredSortedSet<String> waitingQueue() {
-        return redissonClient.getScoredSortedSet(properties.getWaitingKey());
+    public TicketReceipt createEnrollmentTicket(
+            String userId,
+            String sessionId,
+            String courseInstId,
+            String courseCode
+    ) {
+        return ticketIntake.intakeEnrollment(userId, sessionId, courseInstId, courseCode);
+    }
+
+    public TicketReceipt createCancellationTicket(
+            String userId,
+            String sessionId,
+            String courseInstId,
+            String courseCode
+    ) {
+        return ticketIntake.intakeCancellation(userId, sessionId, courseInstId, courseCode);
+    }
+
+    public void removeFromWaitingQueue(String ticketId) {
+        if (ticketId == null || ticketId.isBlank()) {
+            return;
+        }
+        redissonClient.getScoredSortedSet(properties.getWaitingKey()).remove(ticketId);
+    }
+
+    public boolean isActive(String userId) {
+        return activeUsers().contains(userId);
+    }
+
+    /**
+     * 스케줄러·테스트 진입점. DB claim + 핸들러 동기 실행.
+     */
+    public int admitWaitingUsers() {
+        return ticketDispatcher.claimAndDispatch();
     }
 
     private RSetCache<String> activeUsers() {
