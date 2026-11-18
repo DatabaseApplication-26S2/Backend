@@ -60,10 +60,15 @@ public class CourseQueryRepository {
         return jdbc.sql(sql).params(params).query(Long.class).single();
     }
 
-    /** 과목코드로 1건(enrolled 없음). 수정 결과 응답, 과목 상세(BE-12)에 쓴다 */
+    /** 과목코드로 1건(enrolled 없음). 교수 수정·등록 결과 응답에 쓴다 */
     public Optional<CourseView> findByCode(String courseCode) {
+        return findByCode(courseCode, null);
+    }
+
+    /** 과목코드로 1건. studentId가 있으면 그 학생의 enrolled를 함께 계산한다(과목 상세, ENR-01-02) */
+    public Optional<CourseView> findByCode(String courseCode, String studentId) {
         Map<String, Object> params = new LinkedHashMap<>();
-        String sql = select(null, params) + " WHERE c.course_code = :courseCode";
+        String sql = select(studentId, params) + " WHERE c.course_code = :courseCode";
         params.put("courseCode", courseCode);
         return jdbc.sql(sql).params(params).query(ROW).optional();
     }

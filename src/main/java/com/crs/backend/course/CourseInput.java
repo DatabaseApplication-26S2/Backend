@@ -28,10 +28,33 @@ public final class CourseInput {
         }
     }
 
-    /** 수정 가능한 6개 필드(등록에도 같은 규칙). 위반이 있으면 E09로 던진다 */
+    /** 등록: 과목코드 + 6개 필드. 위반이 있으면 E09로 던진다 */
+    public static void requireValidCreate(CourseCreateRequest req) {
+        List<Violation> v = new ArrayList<>();
+        if (req.courseCode() == null) {
+            v.add(new Violation(Source.BODY, "/courseCode", "필수 값입니다"));
+        } else if (!COURSE_CODE.matcher(req.courseCode()).matches()) {
+            v.add(new Violation(Source.BODY, "/courseCode", "영문자·숫자 1~10자여야 합니다"));
+        }
+        addFieldViolations(v, req.name(), req.category(), req.evaluationType(),
+                req.capacity(), req.minimumEnrollment(), req.classroom());
+        if (!v.isEmpty()) {
+            throw CrsException.invalid(v);
+        }
+    }
+
+    /** 수정: 수정 가능한 6개 필드. 위반이 있으면 E09로 던진다 */
     public static void requireValidFields(String name, String category, String evaluationType,
                                           Integer capacity, Integer minimumEnrollment, String classroom) {
         List<Violation> v = new ArrayList<>();
+        addFieldViolations(v, name, category, evaluationType, capacity, minimumEnrollment, classroom);
+        if (!v.isEmpty()) {
+            throw CrsException.invalid(v);
+        }
+    }
+
+    private static void addFieldViolations(List<Violation> v, String name, String category, String evaluationType,
+                                           Integer capacity, Integer minimumEnrollment, String classroom) {
         text(v, "/name", name);
         oneOf(v, "/category", category, CATEGORIES);
         oneOf(v, "/evaluationType", evaluationType, EVALUATION_TYPES);
@@ -41,9 +64,6 @@ public final class CourseInput {
             v.add(new Violation(Source.BODY, "/minimumEnrollment", "정원보다 클 수 없습니다"));
         }
         text(v, "/classroom", classroom);
-        if (!v.isEmpty()) {
-            throw CrsException.invalid(v);
-        }
     }
 
     /** 과목명·강의실: courses CHECK (~ '\S')와 같게 공백만 있는 값은 거절한다(text라 길이 제한은 없음) */

@@ -26,6 +26,19 @@ public class ProfessorCourseService {
     }
 
     /**
+     * CMG-02-01 과목 등록. 판정 순서(openapi.yaml createProfessorCourse):
+     * Access(401, 필터) → PROFESSOR(403) → 본문(400 E09) → 과목코드 중복(409 E10) → 201
+     */
+    public CourseView create(CurrentUser user, CourseCreateRequest req) {
+        if (user.role() != UserRole.PROFESSOR) {
+            throw CrsException.forbidden();
+        }
+        CourseInput.requireValidCreate(req);
+        writer.create(user.userId(), req);
+        return query.findByCode(req.courseCode()).orElseThrow();
+    }
+
+    /**
      * 판정 순서(openapi.yaml updateProfessorCourse):
      * Access(401, 필터) → PROFESSOR(403) → 경로·본문(400 E09) → 과목 잠금 → E04 → 담당 아님(403) → E05 → E11 → 200
      */

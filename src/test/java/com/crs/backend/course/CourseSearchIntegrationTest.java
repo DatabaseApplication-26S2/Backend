@@ -300,6 +300,74 @@ class CourseSearchIntegrationTest {
                 .andExpect(status().isUnauthorized());
     }
 
+    // ---------------- GET /courses/{courseCode} (BE-12) ----------------
+
+    @Test
+    void 과목_상세_교수는_enrolled_없이_받는다() throws Exception {
+        mvc.perform(get("/api/v1/courses/QZ300").header("Authorization", bearer(PROFESSOR_KIM)))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.courseCode").value("QZ300"))
+                .andExpect(jsonPath("$.name").value("QZ 데이터베이스"))
+                .andExpect(jsonPath("$.professorName").value("김민수"))
+                .andExpect(jsonPath("$.capacity").value(40))
+                .andExpect(jsonPath("$.activeEnrollmentCount").value(38))
+                .andExpect(jsonPath("$.remainingSeats").value(2))
+                .andExpect(jsonPath("$.status").value("OPEN"))
+                .andExpect(jsonPath("$.enrolled").doesNotExist())
+                .andExpect(jsonPath("$.courseInstId").doesNotExist());
+    }
+
+    @Test
+    void 과목_상세_입장한_학생은_enrolled를_받는다() throws Exception {
+        when(activeUsers.contains(STUDENT)).thenReturn(true);
+        String token = bearer(STUDENT);
+        mvc.perform(get("/api/v1/courses/QZ300").header("Authorization", token))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.enrolled").value(true));
+        mvc.perform(get("/api/v1/courses/QZ100").header("Authorization", token))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.enrolled").value(false));
+    }
+
+    @Test
+    void 폐강_과목도_상세는_200() throws Exception {
+        mvc.perform(get("/api/v1/courses/QZ200").header("Authorization", bearer(PROFESSOR_KIM)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CLOSED"))
+                .andExpect(jsonPath("$.activeEnrollmentCount").value(0));
+    }
+
+    @Test
+    void 과목_상세_없으면_404_E04_형식_오류는_400_E09() throws Exception {
+        String token = bearer(PROFESSOR_KIM);
+        mvc.perform(get("/api/v1/courses/NOPE999").header("Authorization", token))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("E04"));
+        mvc.perform(get("/api/v1/courses/BAD_CODE").header("Authorization", token))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("E09"))
+                .andExpect(jsonPath("$.violations[0].source").value("PATH"))
+                .andExpect(jsonPath("$.violations[0].field").value("courseCode"));
+        // 과목코드는 대소문자를 구분한다
+        mvc.perform(get("/api/v1/courses/qz300").header("Authorization", token))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void 과목_상세_입장하지_않은_학생은_형식보다_먼저_409_E15() throws Exception {
+        String token = bearer(STUDENT);
+        mvc.perform(get("/api/v1/courses/QZ300").header("Authorization", token))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("E15"));
+        // 판정 순서: 학생 입장(E15) → 과목코드 형식(E09)
+        mvc.perform(get("/api/v1/courses/BAD_CODE").header("Authorization", token))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("E15"));
+    }
+
+    @Test
+    void 과목_상세_토큰_없으면_401() throws Exception {
+        mvc.perform(get("/api/v1/courses/QZ300"))
+                .andExpect(status().isUnauthorized());
+    }
+
     // ---------------- 도우미 ----------------
 
     private void user(String id, String name, UserRole role) {

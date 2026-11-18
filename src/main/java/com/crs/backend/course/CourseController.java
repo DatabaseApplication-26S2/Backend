@@ -3,6 +3,7 @@ package com.crs.backend.course;
 import com.crs.backend.auth.CurrentUser;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -31,6 +32,13 @@ public class CourseController {
             @RequestParam(required = false) String q,
             @RequestParam(required = false) String page) {
         return ResponseEntity.ok(service.search(user, category, q, page));
+    }
+
+    /** GET /courses/{courseCode} : 과목 상세·여석(폐강 과목도 200) */
+    @GetMapping("/courses/{courseCode}")
+    public ResponseEntity<CourseView> getCourse(@RequestAttribute("currentUser") CurrentUser user,
+                                                @PathVariable String courseCode) {
+        return ResponseEntity.ok(service.getCourse(user, courseCode));
     }
 
     /** GET /professor/courses : 로그인한 교수의 담당 과목 전체(폐강 포함, 페이지 없음) */

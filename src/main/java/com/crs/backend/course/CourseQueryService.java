@@ -8,6 +8,7 @@ import com.crs.backend.queue.QueueNotAllowedException;
 import com.crs.backend.queue.QueueService;
 import java.util.List;
 import java.util.Set;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
@@ -75,6 +76,22 @@ public class CourseQueryService {
         }
         requireAdmitted(user);
         return new MyEnrollmentList(repository.findEnrollments(user.userId()));
+    }
+
+    /**
+     * ENR-01-02 과목 상세·여석 조회. 폐강 과목도 200이다.
+     * 판정 순서: Access(401, 필터) → 학생 입장(409 E15) → 과목코드 형식(400 E09) → 과목 없음(404 E04) → 200
+     */
+    @Transactional(readOnly = true)
+    public CourseView getCourse(CurrentUser user, String courseCode) {
+        String studentId = null;
+        if (user.role() == UserRole.STUDENT) {
+            requireAdmitted(user);
+            studentId = user.userId();
+        }
+        CourseInput.requirePathCourseCode(courseCode);
+        return repository.findByCode(courseCode, studentId)
+                .orElseThrow(() -> CrsException.of(HttpStatus.NOT_FOUND, "E04", "과목을 찾을 수 없습니다"));
     }
 
     void requireAdmitted(CurrentUser user) {

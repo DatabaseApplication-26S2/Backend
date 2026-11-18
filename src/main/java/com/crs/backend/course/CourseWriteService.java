@@ -106,6 +106,33 @@ public class CourseWriteService {
                 .update();
     }
 
+    /**
+     * CMG-02-01 과목 등록. 새 과목은 OPEN, 인원 0이며 새 내부 ID를 받는다.
+     * 같은 코드가 동시에 와도 유일성 제약(courses.course_code UNIQUE)으로 하나만 들어간다.
+     * ON CONFLICT DO NOTHING으로 예외 대신 "0행"을 받아 409 E10으로 바꾼다(폐강 과목의 코드도 포함).
+     */
+    @Transactional
+    public void create(String professorId, CourseCreateRequest req) {
+        boolean inserted = jdbc.sql("""
+                        INSERT INTO courses (course_code, professor_id, course_title, course_category, grading_type,
+                                             max_capacity, min_enrollment, active_cnt, classroom, course_status,
+                                             course_created_at)
+                        VALUES (:courseCode, :professorId, :name, :category, :evaluationType,
+                                :capacity, :minimumEnrollment, 0, :classroom, 'OPEN', :now)
+                        ON CONFLICT (course_code) DO NOTHING
+                        RETURNING course_inst_id""")
+                .param("courseCode", req.courseCode()).param("professorId", professorId)
+                .param("name", req.name()).param("category", req.category())
+                .param("evaluationType", req.evaluationType()).param("capacity", req.capacity())
+                .param("minimumEnrollment", req.minimumEnrollment()).param("classroom", req.classroom())
+                .param("now", Timestamp.from(Instant.now()))
+                .query(String.class).optional().isPresent();
+        if (!inserted) {
+            throw CrsException.of(HttpStatus.CONFLICT, "E10",
+                    "과목코드 " + req.courseCode() + "은 이미 사용 중입니다. 폐강된 과목의 코드도 다시 쓸 수 없습니다.");
+        }
+    }
+
     /** 과목 행을 잠그고 현재 값을 읽는다. 없으면 404 E04 */
     private LockedCourse lock(String courseInstId) {
         return jdbc.sql("""

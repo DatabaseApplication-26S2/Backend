@@ -81,6 +81,7 @@ class CourseWriteIntegrationTest {
     @BeforeEach
     void seed() {
         TestFixtures.deleteCourses(jdbc, "QZ"); // 내역 → 티켓 → 과목 순서(FK)
+        TestFixtures.deleteCourses(jdbc, "qz"); // 대소문자 구분 확인용 소문자 코드
         user(ADMIN, "관리자", UserRole.ADMIN);
         user(PROF_KIM, "김민수", UserRole.PROFESSOR);
         user(PROF_PARK, "박서연", UserRole.PROFESSOR);
@@ -273,6 +274,128 @@ class CourseWriteIntegrationTest {
                 .andExpect(jsonPath("$.violations[0].source").value("PATH"));
     }
 
+    // ===================== POST /professor/courses (BE-12) =====================
+
+    @Test
+    void 교수는_과목을_등록하고_201과_Location을_받는다() throws Exception {
+        mvc.perform(post("/api/v1/professor/courses").header("Authorization", bearer(PROF_KIM))
+                        .contentType("application/json")
+                        .content(create("QZ900", "분산 시스템", "MAJOR", "ABSOLUTE", 30, 5, "공학관 410")))
+                .andExpect(status().isCreated())
+                .andExpect(header().string("Location", "/api/v1/courses/QZ900"))
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.courseCode").value("QZ900"))
+                .andExpect(jsonPath("$.name").value("분산 시스템"))
+                .andExpect(jsonPath("$.category").value("MAJOR"))
+                .andExpect(jsonPath("$.evaluationType").value("ABSOLUTE"))
+                .andExpect(jsonPath("$.professorName").value("김민수"))
+                .andExpect(jsonPath("$.capacity").value(30))
+                .andExpect(jsonPath("$.minimumEnrollment").value(5))
+                .andExpect(jsonPath("$.activeEnrollmentCount").value(0))
+                .andExpect(jsonPath("$.remainingSeats").value(30))
+                .andExpect(jsonPath("$.classroom").value("공학관 410"))
+                .andExpect(jsonPath("$.status").value("OPEN"))
+                .andExpect(jsonPath("$.enrolled").doesNotExist());
+        // 담당교수는 본문이 아니라 로그인한 교수로 정해진다
+        assertThat(jdbc.sql("SELECT professor_id FROM courses WHERE course_code = 'QZ900'")
+                .query(String.class).single()).isEqualTo(PROF_KIM);
+    }
+
+    @Test
+    void 이미_있는_코드는_폐강_과목이라도_409_E10() throws Exception {
+        String token = bearer(PROF_KIM);
+        mvc.perform(post("/api/v1/professor/courses").header("Authorization", token).contentType("application/json")
+                        .content(create("QZ100", "과목", "MAJOR", "RELATIVE", 30, 5, "강의실")))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("E10"));
+        mvc.perform(post("/api/v1/professor/courses").header("Authorization", token).contentType("application/json")
+                        .content(create("QZ200", "과목", "MAJOR", "RELATIVE", 30, 5, "강의실")))  // QZ200은 폐강
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("E10"));
+        // 대소문자를 구분하므로 소문자 qz100은 다른 코드다
+        mvc.perform(post("/api/v1/professor/courses").header("Authorization", token).contentType("application/json")
+                        .content(create("qz100", "과목", "MAJOR", "RELATIVE", 30, 5, "강의실")))
+                .andExpect(status().isCreated());
+    }
+
+    @Test
+    void 같은_코드로_동시에_등록하면_하나만_성공하고_나머지는_E10() throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(5);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<String>> results = new ArrayList<>();
+        try {
+            for (int i = 0; i < 5; i++) {
+                results.add(pool.submit(() -> {
+                    start.await();
+                    try {
+                        professorCourseService.create(new CurrentUser(PROF_KIM, "s", UserRole.PROFESSOR),
+                                new CourseCreateRequest("QZ950", "동시 등록", "MAJOR", "RELATIVE", 10, 1, "강의실"));
+                        return "OK";
+                    } catch (com.crs.backend.common.CrsException e) {
+                        return e.getCode();
+                    }
+                }));
+            }
+            start.countDown();
+            List<String> codes = new ArrayList<>();
+            for (Future<String> f : results) codes.add(f.get(30, TimeUnit.SECONDS));
+            assertThat(codes).containsOnly("OK", "E10");
+            assertThat(codes.stream().filter("OK"::equals).count()).isEqualTo(1);
+            assertThat(jdbc.sql("SELECT count(*) FROM courses WHERE course_code = 'QZ950'")
+                    .query(Long.class).single()).isEqualTo(1);
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void 등록_본문_오류는_400_E09() throws Exception {
+        String token = bearer(PROF_KIM);
+        // 과목코드 형식
+        mvc.perform(post("/api/v1/professor/courses").header("Authorization", token).contentType("application/json")
+                        .content(create("BAD-CODE!", "과목", "MAJOR", "RELATIVE", 30, 5, "강의실")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.violations[0].field").value("/courseCode"));
+        // 공백만 있는 과목명
+        mvc.perform(post("/api/v1/professor/courses").header("Authorization", token).contentType("application/json")
+                        .content(create("QZ901", "   ", "MAJOR", "RELATIVE", 30, 5, "강의실")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.violations[0].field").value("/name"));
+        // 최소 인원 > 정원
+        mvc.perform(post("/api/v1/professor/courses").header("Authorization", token).contentType("application/json")
+                        .content(create("QZ902", "과목", "MAJOR", "RELATIVE", 5, 6, "강의실")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.violations[0].field").value("/minimumEnrollment"));
+        // 서버 소유 필드(담당교수)를 보내면 E09
+        mvc.perform(post("/api/v1/professor/courses").header("Authorization", token).contentType("application/json")
+                        .content("{\"courseCode\":\"QZ903\",\"name\":\"과목\",\"category\":\"MAJOR\",\"evaluationType\":\"RELATIVE\","
+                                + "\"capacity\":30,\"minimumEnrollment\":5,\"classroom\":\"강의실\",\"professorId\":\"" + PROF_PARK + "\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.violations[0].field").value("/professorId"));
+        // 필수 필드 누락(과목코드, 이름, 이수구분, 평가유형, 정원, 최소 인원, 강의실 = 7개)
+        mvc.perform(post("/api/v1/professor/courses").header("Authorization", token).contentType("application/json")
+                        .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.violations.length()").value(7));
+        // 정수 범위를 넘는 정원
+        mvc.perform(post("/api/v1/professor/courses").header("Authorization", token).contentType("application/json")
+                        .content("{\"courseCode\":\"QZ904\",\"name\":\"과목\",\"category\":\"MAJOR\",\"evaluationType\":\"RELATIVE\","
+                                + "\"capacity\":2147483648,\"minimumEnrollment\":5,\"classroom\":\"강의실\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("E09"));
+        // 아무것도 등록되지 않았다
+        assertThat(jdbc.sql("SELECT count(*) FROM courses WHERE course_code IN ('QZ901','QZ902','QZ903','QZ904')")
+                .query(Long.class).single()).isZero();
+    }
+
+    @Test
+    void 교수가_아니면_등록할_수_없다_403() throws Exception {
+        mvc.perform(post("/api/v1/professor/courses").header("Authorization", bearer(ADMIN))
+                        .contentType("application/json")
+                        .content(create("QZ905", "과목", "MAJOR", "RELATIVE", 30, 5, "강의실")))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("E02"))
+                .andExpect(jsonPath("$.reason").value("FORBIDDEN"));
+    }
+
     // ===================== 동시 실행(INV-2) =====================
 
     @Test
@@ -361,6 +484,11 @@ class CourseWriteIntegrationTest {
     private org.springframework.test.web.servlet.RequestBuilder professorUpdate(String userId, String code, String json) {
         return put("/api/v1/professor/courses/" + code).header("Authorization", bearer(userId))
                 .contentType("application/json").content(json);
+    }
+
+    private static String create(String code, String name, String category, String eval, int capacity, int minimum,
+                                 String classroom) {
+        return "{\"courseCode\":\"" + code + "\"," + body(name, category, eval, capacity, minimum, classroom).substring(1);
     }
 
     private static String body(String name, String category, String eval, int capacity, int minimum, String classroom) {
