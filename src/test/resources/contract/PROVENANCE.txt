@@ -1,0 +1,7 @@
+These 47 JSON Schemas were reconstructed from the schema definitions AND property tables in the user's Notion export:
+API명세서 7ca60f5e28a9822eb49f017187d12efa.md, section 7.
+Its metadata identifies OpenAPI 3.1.1, API 0.1.0, original SHA256
+4ad2af2c78eea13aa46aac2bec5ac285c136f6048a538121b29df1547ca3e5bc.
+This is NOT the original openapi.yaml. The Docs repository was empty on 2026-11-18.
+The tests validate response schemas and negative cases, not all HTTP operations.
+Replace/compare against the team's original frozen contract when it becomes available.

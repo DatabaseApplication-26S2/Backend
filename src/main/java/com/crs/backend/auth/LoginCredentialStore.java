@@ -31,6 +31,10 @@ public class LoginCredentialStore {
     }
 
     public synchronized void put(String contextId, String userId, char[] password) {
+        put(contextId, userId, password, clock.instant().plus(LIFETIME));
+    }
+
+    public synchronized void put(String contextId, String userId, char[] password, Instant expiresAt) {
         purgeExpired();
         if (pending.containsKey(contextId)) {
             throw new IllegalStateException("Credential context already exists");
@@ -39,7 +43,7 @@ public class LoginCredentialStore {
             throw new IllegalStateException("Login capacity reached");
         }
         pending.put(contextId, new Credential(userId, password.clone(),
-                clock.instant().plus(LIFETIME)));
+                expiresAt));
     }
 
     public <T> T consume(String contextId, Function<Credential, T> verifier,

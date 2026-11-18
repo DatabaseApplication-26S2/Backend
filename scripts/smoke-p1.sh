@@ -69,8 +69,10 @@ check() {  # check "이름" 조건식...
   if "$@"; then
     PASS=$((PASS + 1)); printf '  \033[32mPASS\033[0m %s\n' "$name"
   else
-    FAILED+=("$name (HTTP $STATUS) $(printf '%s' "$BODY" | head -c 200)")
-    printf '  \033[31mFAIL\033[0m %s  → HTTP %s %s\n' "$name" "$STATUS" "$(printf '%s' "$BODY" | head -c 200)"
+    # A failed token-response assertion can still contain a valid Access token.
+    # Never copy response bodies or cookies into terminal/CI logs.
+    FAILED+=("$name (HTTP $STATUS)")
+    printf '  \033[31mFAIL\033[0m %s  → HTTP %s\n' "$name" "$STATUS"
   fi
 }
 is() { [ "$1" = "$2" ]; }

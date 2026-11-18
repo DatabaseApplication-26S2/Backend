@@ -66,3 +66,31 @@ S1~S3의 정의는 구현계획.md#verification을 따른다. 아래 표에 시�
 | 11/18 | `POST /auth/login-tickets/{id}/tokens` | 응답에 `user`·`session`이 없어 로그인 후 화면 이동이 멈춤 | 김재섭님 | 수정함 |
 | 11/18 | `POST /auth/login` | 202 접수증에 `Retry-After: 2` 헤더가 없음(계약 5절) | 김재섭님 | 수정함 |
 | | | | | |
+
+## 5. 인증 브랜치 통합 재검증 (2026-11-18)
+
+- 통합 기준: `feature/auth-login`의 `fbd6026` + 백진현님 브랜치 `21a0018`.
+- 환경: Java 21, PostgreSQL 17 / Redis 7 일회용 컨테이너, demo 프로파일, 백엔드 `127.0.0.1:18080`.
+- 기존 팀 DB는 사용하지 않았다. V900 시드에 `scripts/smoke-auth-demo.sql`의 보조 과목 2개를 한 번 추가했다.
+- 첫 실행: 24/27 통과. 교수의 입장/내역 조회, 학생의 교수 과목 조회 3건에서 HTTP 403이었지만 오류 JSON 파싱 실패.
+- 원인/수정: `AuthSecurity` 필터 오류가 ISO-8859-1로 출력돼 한글 중간점 등이 UTF-8 파싱을 깨뜨림. 응답 인코딩을 UTF-8로 지정하고 실제 응답 바이트와 한글 제목 보존을 회귀 테스트에 추가했다.
+- 수정 후 재실행: **27/27 통과, exit 0**. 로그인 접수/조회/교환, 세션 입장, 역할별 권한, 신청/배정/취소, 교수 수정, 로그아웃 무효화까지 확인했다.
+- 스크립트 실패 출력에서 응답 본문을 제거했다. 토큰 수령 응답의 검증 실패가 Access 토큰을 로그에 남기지 않도록 했다.
+- `build redisTest`: **73개 일반 테스트 + 2개 실제 Redis 테스트 통과**. UTF-8 회귀 검증은 기존 권한 테스트에 추가했다.
+
+### V900 시드를 이용한 재현 설정
+
+먼저 일회용 DB에 demo 프로파일로 기동하고 `scripts/smoke-auth-demo.sql`을 한 번 실행한다.
+그 후 Git Bash에서 아래 환경 변수를 지정하면 원래 smoke 시나리오 27개를 그대로 실행한다.
+`BASE`는 실제로 띄운 테스트 서버 주소로 변경한다.
+
+```bash
+BASE=http://127.0.0.1:18080/api/v1 \
+ORIGIN=http://localhost:5173 \
+PASSWORD='Demo-password1!' STUDENT=20260003 PROFESSOR=P1001 ADMIN=A1001 \
+COURSE_ENROLL=DEMO02 COURSE_ASSIGN=DEMO03 COURSE_CLOSED=SMKCLOSED COURSE_OTHERS=DEMO02 \
+bash scripts/smoke-p1.sh
+```
+
+이 기록은 직접 HTTP smoke 실행 결과다. Vite 프록시 및 실제 브라우저 쿠키 저장/전송,
+위 S1~S3, 공용 TicketIntake/TicketHandler 최종 연동의 완료를 의미하지 않는다.

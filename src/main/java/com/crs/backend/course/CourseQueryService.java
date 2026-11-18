@@ -23,11 +23,11 @@ public class CourseQueryService {
     private static final Set<String> CATEGORIES = Set.of("ALL", "GENERAL", "MAJOR");
 
     private final CourseQueryRepository repository;
-    private final QueueService queueService;
+    private final com.crs.backend.auth.AuthService auth;
 
-    public CourseQueryService(CourseQueryRepository repository, QueueService queueService) {
+    public CourseQueryService(CourseQueryRepository repository, com.crs.backend.auth.AuthService auth) {
         this.repository = repository;
-        this.queueService = queueService;
+        this.auth = auth;
     }
 
     /**
@@ -109,7 +109,7 @@ public class CourseQueryService {
     }
 
     void requireAdmitted(CurrentUser user) {
-        if (!queueService.isActive(user.userId())) {
+        if (!auth.isAdmitted(user.userId(), user.sessionId())) {
             throw new QueueNotAllowedException(user.userId()); // → 409 E15
         }
     }

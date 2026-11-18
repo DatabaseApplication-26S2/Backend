@@ -6,16 +6,15 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
 
 /**
- * 수강신청 요청 시 active_users(화면 입장) 포함 여부를 검증한다.
- * userId는 {@code X-User-Id} 헤더로 전달한다 (명세 Access 주체 대용).
+ * 보안 필터가 검증한 사용자/세션의 DB 입장 상태를 확인한다.
  */
 @Component
 public class ActiveUserInterceptor implements HandlerInterceptor {
 
-    private final QueueService queueService;
+    private final com.crs.backend.auth.AuthService auth;
 
-    public ActiveUserInterceptor(QueueService queueService) {
-        this.queueService = queueService;
+    public ActiveUserInterceptor(com.crs.backend.auth.AuthService auth) {
+        this.auth = auth;
     }
 
     @Override
@@ -24,7 +23,7 @@ public class ActiveUserInterceptor implements HandlerInterceptor {
         if (userId == null || userId.isBlank()) {
             throw new QueueNotAllowedException("missing");
         }
-        if (!queueService.isActive(userId.trim())) {
+        if (!auth.isAdmitted(userId, request.getHeader(QueueController.SESSION_ID_HEADER))) {
             throw new QueueNotAllowedException(userId.trim());
         }
         return true;
