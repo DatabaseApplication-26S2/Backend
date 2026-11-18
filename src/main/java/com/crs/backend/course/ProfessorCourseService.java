@@ -39,6 +39,27 @@ public class ProfessorCourseService {
     }
 
     /**
+     * CMG-02-03 담당 과목 폐강. 판정 순서(openapi.yaml closeProfessorCourse):
+     * Access(401, 필터) → PROFESSOR(403) → 경로·본문 없음(400 E09) → 과목 잠금 → E04 → 담당 아님(403) → E14 → 200
+     *
+     * @param hasBody 요청에 본문이 있었는지(이 연산은 본문을 받지 않는다)
+     */
+    public CourseClosureResult close(CurrentUser user, String courseCode, boolean hasBody) {
+        if (user.role() != UserRole.PROFESSOR) {
+            throw CrsException.forbidden();
+        }
+        CourseInput.requirePathCourseCode(courseCode);
+        if (hasBody) {
+            throw CrsException.invalid(com.crs.backend.common.ApiProblem.Source.BODY, "", "본문을 보내지 마십시오.");
+        }
+        String courseInstId = courses.findByCourseCode(courseCode)
+                .map(Course::getCourseInstId)
+                .orElseThrow(() -> CrsException.of(HttpStatus.NOT_FOUND, "E04", "과목을 찾을 수 없습니다"));
+        int closed = writer.close(courseInstId, user.userId());
+        return new CourseClosureResult(query.findByCode(courseCode).orElseThrow(), closed);
+    }
+
+    /**
      * 판정 순서(openapi.yaml updateProfessorCourse):
      * Access(401, 필터) → PROFESSOR(403) → 경로·본문(400 E09) → 과목 잠금 → E04 → 담당 아님(403) → E05 → E11 → 200
      */

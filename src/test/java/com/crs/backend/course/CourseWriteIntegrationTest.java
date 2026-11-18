@@ -1,9 +1,12 @@
 package com.crs.backend.course;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.endsWith;
+import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -13,6 +16,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.crs.backend.TestFixtures;
 import com.crs.backend.TestcontainersConfiguration;
 import com.crs.backend.adapter.out.persistence.jpa.UserAccountRepository;
+import com.crs.backend.admin.AdminClosureService;
+import com.crs.backend.admin.CourseClosureBatchRequest;
+import com.crs.backend.admin.CourseClosureBatchResult;
 import com.crs.backend.admin.AdminEnrollmentRequest;
 import com.crs.backend.admin.AdminEnrollmentService;
 import com.crs.backend.auth.AuthService;
@@ -78,6 +84,7 @@ class CourseWriteIntegrationTest {
     @Autowired EnrollmentService enrollmentService;
     @Autowired AdminEnrollmentService adminEnrollmentService;
     @Autowired ProfessorCourseService professorCourseService;
+    @Autowired AdminClosureService adminClosureService;
 
     @BeforeEach
     void seed() {
@@ -395,6 +402,194 @@ class CourseWriteIntegrationTest {
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("E02"))
                 .andExpect(jsonPath("$.reason").value("FORBIDDEN"));
+    }
+
+    // ===================== BE-13 폐강 =====================
+    // seed 기준 폐강 대상(OPEN이고 인원 < 최소 인원): QZ100(정원 40, 최소 10, 인원 0), QZ400(박서연, 최소 5, 인원 0)
+    // 대상 아님: QZ200(이미 폐강), QZ300(최소 1, 인원 1)
+
+    @Test
+    void 교수_폐강은_과목_CLOSED_내역_CLOSED_보존_인원_0을_한_번에() throws Exception {
+        adminEnroll(STUDENT, "QZ100");
+        adminEnroll(STUDENT2, "QZ100"); // 인원 2 < 최소 10
+        mvc.perform(post("/api/v1/professor/courses/QZ100/closure").header("Authorization", bearer(PROF_KIM)))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.course.courseCode").value("QZ100"))
+                .andExpect(jsonPath("$.course.status").value("CLOSED"))
+                .andExpect(jsonPath("$.course.activeEnrollmentCount").value(0))
+                .andExpect(jsonPath("$.course.professorName").value("김민수"))
+                .andExpect(jsonPath("$.closedEnrollmentCount").value(2));
+        // DB: 내역은 지우지 않고 CLOSED로 보존, 과목은 CLOSED·인원 0
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM enrollments e JOIN courses c USING (course_inst_id)
+                 WHERE c.course_code = 'QZ100' AND e.enroll_status = 'CLOSED'""").query(Long.class).single()).isEqualTo(2);
+        assertThat(jdbc.sql("SELECT course_status || '/' || active_cnt FROM courses WHERE course_code = 'QZ100'")
+                .query(String.class).single()).isEqualTo("CLOSED/0");
+        assertInv2();
+        // 반복 요청은 멱등 성공이 아니라 E14
+        mvc.perform(post("/api/v1/professor/courses/QZ100/closure").header("Authorization", bearer(PROF_KIM)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("E14"));
+    }
+
+    @Test
+    void 최소_인원을_채운_과목은_폐강_대상이_아니다_409_E14() throws Exception {
+        mvc.perform(post("/api/v1/professor/courses/QZ300/closure").header("Authorization", bearer(PROF_KIM)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("E14"));
+        assertThat(jdbc.sql("SELECT course_status FROM courses WHERE course_code = 'QZ300'")
+                .query(String.class).single()).isEqualTo("OPEN");
+    }
+
+    @Test
+    void 교수_폐강_오류_남의과목_403_없음_404_형식_400_본문_400_교수아님_403() throws Exception {
+        String token = bearer(PROF_KIM);
+        mvc.perform(post("/api/v1/professor/courses/QZ400/closure").header("Authorization", token))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.reason").value("FORBIDDEN"));
+        mvc.perform(post("/api/v1/professor/courses/NOPE999/closure").header("Authorization", token))
+                .andExpect(status().isNotFound()).andExpect(jsonPath("$.code").value("E04"));
+        mvc.perform(post("/api/v1/professor/courses/BAD_CODE/closure").header("Authorization", token))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.violations[0].source").value("PATH"));
+        // 본문을 받지 않는 연산(확인 여부 필드 포함)
+        mvc.perform(post("/api/v1/professor/courses/QZ100/closure").header("Authorization", token)
+                        .contentType("application/json").content("{\"confirm\":true}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("E09"))
+                .andExpect(jsonPath("$.violations[0].source").value("BODY"));
+        mvc.perform(post("/api/v1/professor/courses/QZ100/closure").header("Authorization", bearer(ADMIN)))
+                .andExpect(status().isForbidden());
+        assertThat(jdbc.sql("SELECT count(*) FROM courses WHERE course_status = 'CLOSED' AND course_code LIKE 'QZ%'")
+                .query(Long.class).single()).isEqualTo(1); // 처음부터 폐강이던 QZ200뿐
+    }
+
+    @Test
+    void 폐강_대상_조회는_OPEN이고_인원이_최소보다_적은_과목만_코드순으로() throws Exception {
+        String token = bearer(ADMIN);
+        mvc.perform(get("/api/v1/admin/closure-candidates").header("Authorization", token))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.items[*].courseCode").value(contains("QZ100", "QZ400")))
+                .andExpect(jsonPath("$.items[0].name").value("과목"))
+                .andExpect(jsonPath("$.items[0].professorName").value("김민수"))
+                .andExpect(jsonPath("$.items[0].activeEnrollmentCount").value(0))
+                .andExpect(jsonPath("$.items[0].minimumEnrollment").value(10))
+                .andExpect(jsonPath("$.items[0].capacity").value(40))
+                .andExpect(jsonPath("$.items[0].status").doesNotExist())
+                .andExpect(jsonPath("$.page").value(1))
+                .andExpect(jsonPath("$.pageSize").value(20))
+                .andExpect(jsonPath("$.totalItems").value(2))
+                .andExpect(jsonPath("$.totalPages").value(1));
+        mvc.perform(get("/api/v1/admin/closure-candidates").param("page", "3").header("Authorization", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(0))
+                .andExpect(jsonPath("$.totalItems").value(2));
+        mvc.perform(get("/api/v1/admin/closure-candidates").param("page", "0").header("Authorization", token))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.violations[0].field").value("page"));
+        mvc.perform(get("/api/v1/admin/closure-candidates").header("Authorization", bearer(PROF_KIM)))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void 일괄_폐강은_과목별로_처리하고_입력_순서대로_결과를_준다() throws Exception {
+        mvc.perform(post("/api/v1/admin/course-closures").header("Authorization", bearer(ADMIN))
+                        .contentType("application/json")
+                        .content("{\"courseCodes\":[\"QZ400\",\"QZ200\",\"NOPE999\",\"QZ300\",\"QZ100\"]}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[*].courseCode").value(contains("QZ400", "QZ200", "NOPE999", "QZ300", "QZ100")))
+                .andExpect(jsonPath("$.items[*].code").value(contains("OK", "E14", "E04", "E14", "OK")))
+                .andExpect(jsonPath("$.items[0].closedEnrollmentCount").value(0))
+                .andExpect(jsonPath("$.items[1].closedEnrollmentCount").value(nullValue()))
+                .andExpect(jsonPath("$.items[2].closedEnrollmentCount").value(nullValue()));
+        // 앞의 실패가 뒤의 성공을 막지 않는다(전체 롤백 없음)
+        assertThat(jdbc.sql("SELECT string_agg(course_code, ',' ORDER BY course_code) FROM courses WHERE course_status = 'CLOSED' AND course_code LIKE 'QZ%'")
+                .query(String.class).single()).isEqualTo("QZ100,QZ200,QZ400");
+        assertInv2();
+    }
+
+    @Test
+    void 일괄_폐강_본문_오류는_어떤_과목도_처리하지_않는다_400_E09() throws Exception {
+        String token = bearer(ADMIN);
+        mvc.perform(post("/api/v1/admin/course-closures").header("Authorization", token).contentType("application/json")
+                        .content("{\"courseCodes\":[]}"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.violations[0].field").value("/courseCodes"));
+        mvc.perform(post("/api/v1/admin/course-closures").header("Authorization", token).contentType("application/json")
+                        .content("{\"courseCodes\":[\"QZ100\",\"QZ100\"]}"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.violations[0].field").value("/courseCodes/1"));
+        mvc.perform(post("/api/v1/admin/course-closures").header("Authorization", token).contentType("application/json")
+                        .content("{\"courseCodes\":[\"QZ100\",\"bad-code\"]}"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.violations[0].field").value("/courseCodes/1"));
+        mvc.perform(post("/api/v1/admin/course-closures").header("Authorization", token).contentType("application/json")
+                        .content("{\"courseCodes\":[\"QZ100\"],\"force\":true}"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.violations[0].field").value("/force"));
+        mvc.perform(post("/api/v1/admin/course-closures").header("Authorization", bearer(PROF_KIM))
+                        .contentType("application/json").content("{\"courseCodes\":[\"QZ100\"]}"))
+                .andExpect(status().isForbidden());
+        assertThat(jdbc.sql("SELECT course_status FROM courses WHERE course_code = 'QZ100'")
+                .query(String.class).single()).isEqualTo("OPEN");
+    }
+
+    @Test
+    void 관리자_세션이_무효가_되면_남은_과목은_변경_없이_E02() {
+        String sessionId = TestFixtures.session(jdbc, ADMIN, "ADMIN");
+        jdbc.sql("""
+                UPDATE sessions SET session_status = 'REVOKED', revoked_at = now(), revoke_reason = 'LOGOUT'
+                 WHERE session_id = :id""").param("id", sessionId).update();
+        CourseClosureBatchResult result = adminClosureService.closeCourses(
+                new CurrentUser(ADMIN, sessionId, UserRole.ADMIN),
+                new CourseClosureBatchRequest(List.of("QZ100", "QZ400")));
+        assertThat(result.items()).extracting("code").containsExactly("E02", "E02");
+        assertThat(result.items()).extracting("closedEnrollmentCount").containsOnlyNulls();
+        assertThat(jdbc.sql("SELECT count(*) FROM courses WHERE course_code IN ('QZ100','QZ400') AND course_status = 'OPEN'")
+                .query(Long.class).single()).isEqualTo(2);
+    }
+
+    @Test
+    void 폐강과_관리자_배정이_동시에_와도_인원과_내역이_어긋나지_않는다() throws Exception {
+        course("QZ800", PROF_KIM, 10, 5, "OPEN");
+        List<String> students = List.of("qzcl1", "qzcl2", "qzcl3", "qzcl4"); // 4명 배정해도 최소 5 미만 → 폐강은 항상 성공
+        for (String s : students) user(s, s, UserRole.STUDENT);
+
+        ExecutorService pool = Executors.newFixedThreadPool(5);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<String>> assigns = new ArrayList<>();
+        try {
+            for (String s : students) {
+                assigns.add(pool.submit(() -> {
+                    start.await();
+                    try {
+                        adminEnroll(s, "QZ800");
+                        return "OK";
+                    } catch (com.crs.backend.common.CrsException e) {
+                        return e.getCode();
+                    }
+                }));
+            }
+            Future<CourseClosureResult> closure = pool.submit(() -> {
+                start.await();
+                return professorCourseService.close(new CurrentUser(PROF_KIM, "s", UserRole.PROFESSOR), "QZ800", false);
+            });
+            start.countDown();
+
+            int closed = closure.get(60, TimeUnit.SECONDS).closedEnrollmentCount();
+            List<String> codes = new ArrayList<>();
+            for (Future<String> f : assigns) codes.add(f.get(60, TimeUnit.SECONDS));
+
+            // 폐강 전에 잠금을 얻은 배정은 OK(그리고 폐강으로 CLOSED), 폐강 뒤의 배정은 E05.
+            // 폐강이 먼저 잠금을 얻으면 4건 모두 E05일 수도 있다(어느 순서든 맞는 결과)
+            assertThat(codes).isSubsetOf("OK", "E05");
+            assertThat(codes.stream().filter("OK"::equals).count()).isEqualTo(closed);
+            assertThat(jdbc.sql("SELECT course_status || '/' || active_cnt FROM courses WHERE course_code = 'QZ800'")
+                    .query(String.class).single()).isEqualTo("CLOSED/0");
+            assertThat(jdbc.sql("""
+                    SELECT count(*) FROM enrollments e JOIN courses c USING (course_inst_id)
+                     WHERE c.course_code = 'QZ800' AND e.enroll_status = 'CLOSED'""").query(Long.class).single())
+                    .isEqualTo(closed);
+            assertInv2();
+        } finally {
+            pool.shutdownNow();
+        }
     }
 
     // ===================== 동시 실행(INV-2) =====================
