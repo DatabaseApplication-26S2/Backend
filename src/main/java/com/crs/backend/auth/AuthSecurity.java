@@ -85,6 +85,7 @@ public class AuthSecurity {
                     response.addHeader("Vary", "Origin");
                 }
                 response.setStatus(ex.status());
+                response.setCharacterEncoding(java.nio.charset.StandardCharsets.UTF_8.name());
                 response.setContentType("application/problem+json");
                 response.setHeader("Cache-Control", "no-store");
                 if (ex.status() == 401) response.setHeader("WWW-Authenticate", request.getHeader("Authorization") == null ? "Bearer" : "Bearer error=\"invalid_token\"");

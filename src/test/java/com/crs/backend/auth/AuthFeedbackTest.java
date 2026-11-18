@@ -41,6 +41,12 @@ class AuthFeedbackTest {
         new AuthSecurity.AuthFilter(auth, "http://localhost:5173")
             .doFilter(request, response, (req, res) -> fail("Student must be rejected"));
         assertEquals(403, response.getStatus());
+        assertEquals("UTF-8", response.getCharacterEncoding());
+        var decoded = java.nio.charset.StandardCharsets.UTF_8.newDecoder()
+            .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+            .decode(java.nio.ByteBuffer.wrap(response.getContentAsByteArray())).toString();
+        assertTrue(decoded.contains(com.crs.backend.common.ApiProblem.title("E02")),
+            "The Korean ProblemDetails title must survive HTTP UTF-8 encoding");
     }
     @Test void jwtContainsRoleAndCannotOutliveSession() throws Exception {
         var codec = new TokenCodec(AuthService.randomToken());
