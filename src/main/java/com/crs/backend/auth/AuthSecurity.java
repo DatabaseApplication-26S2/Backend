@@ -59,7 +59,7 @@ public class AuthSecurity {
                     throw new AuthFailure(403, "FORBIDDEN");
                 boolean authInput = cookieOperation || path.equals("/api/v1/admission") || path.startsWith("/api/v1/tickets/");
                 if (authInput && request.getQueryString() != null && !request.getQueryString().isEmpty())
-                    throw AuthFailure.invalid(com.crs.backend.common.ApiProblem.Source.QUERY, "");
+                    throw AuthFailure.invalid(com.crs.backend.common.ApiProblem.Source.QUERY, firstQueryName(request.getQueryString()));
                 if (authInput && !path.equals("/api/v1/auth/login") && request.getInputStream().read() != -1)
                     throw AuthFailure.invalid(com.crs.backend.common.ApiProblem.Source.BODY, "");
                 request.setAttribute("currentUser", user);
@@ -91,6 +91,12 @@ public class AuthSecurity {
                 if (ex.status() == 401) response.setHeader("WWW-Authenticate", request.getHeader("Authorization") == null ? "Bearer" : "Bearer error=\"invalid_token\"");
                 response.getWriter().write(new tools.jackson.databind.ObjectMapper().writeValueAsString(ex.body()));
             }
+        }
+        /** FieldViolation.field for QUERY is the parameter name (openapi.yaml FieldViolation). */
+        static String firstQueryName(String query) {
+            String raw = query.split("[&=]", 2)[0];
+            try { return java.net.URLDecoder.decode(raw, java.nio.charset.StandardCharsets.UTF_8); }
+            catch (IllegalArgumentException malformed) { return raw; }
         }
     }
 }

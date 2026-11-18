@@ -1,11 +1,11 @@
 package com.crs.backend.config;
 
+import com.crs.backend.auth.AuthService;
 import com.crs.backend.auth.CurrentUser;
 import com.crs.backend.common.ApiProblem.Source;
 import com.crs.backend.common.ApiProblem.Violation;
 import com.crs.backend.common.CrsException;
 import com.crs.backend.domain.enums.UserRole;
-import com.crs.backend.queue.QueueService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.net.URLDecoder;
@@ -62,10 +62,10 @@ public class ContractStrictnessInterceptor implements HandlerInterceptor {
         return new Rule(method, Pattern.compile("^/api/v1" + path + "$"), query, body);
     }
 
-    private final QueueService queueService;
+    private final AuthService authService;
 
-    public ContractStrictnessInterceptor(QueueService queueService) {
-        this.queueService = queueService;
+    public ContractStrictnessInterceptor(AuthService authService) {
+        this.authService = authService;
     }
 
     @Override
@@ -116,7 +116,7 @@ public class ContractStrictnessInterceptor implements HandlerInterceptor {
         }
         boolean courseRead = "GET".equals(request.getMethod())
                 && (path.equals("/api/v1/courses") || path.startsWith("/api/v1/courses/"));
-        return courseRead && user.role() == UserRole.STUDENT && !queueService.isActive(user.userId());
+        return courseRead && user.role() == UserRole.STUDENT && !authService.isAdmitted(user.userId(), user.sessionId());
     }
 
     /**

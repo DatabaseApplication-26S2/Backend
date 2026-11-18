@@ -387,8 +387,9 @@ class CourseSearchIntegrationTest {
         mvc.perform(get("/api/v1/courses/QZ300?debug").header("Authorization", bearer(PROFESSOR_KIM)))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.violations[0].field").value("debug"));
-        // 인증 전 연산도 같다
+        // 인증 전 연산도 같다(쿠키 연산은 Origin·CSRF 검사 403이 먼저라 두 헤더를 붙인다)
         mvc.perform(post("/api/v1/auth/login?remember=1").contentType("application/json")
+                        .header("Origin", "http://localhost:5173").header("X-CSRF-Protection", "1")
                         .content("{\"userId\":\"" + STUDENT + "\",\"password\":\"" + PASSWORD + "\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.violations[0].field").value("remember"));
@@ -410,7 +411,8 @@ class CourseSearchIntegrationTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.violations[0].source").value("BODY"))
                 .andExpect(jsonPath("$.violations[0].field").value(""));
-        mvc.perform(post("/api/v1/auth/logout").contentType("application/json").content("{\"all\":true}"))
+        mvc.perform(post("/api/v1/auth/logout").contentType("application/json").content("{\"all\":true}")
+                        .header("Origin", "http://localhost:5173").header("X-CSRF-Protection", "1"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.violations[0].source").value("BODY"));
     }
@@ -432,7 +434,7 @@ class CourseSearchIntegrationTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("E15"));
         // 학생이 교수 API를 호출: 쿼리 오류보다 403이 먼저
-        when(activeUsers.contains(STUDENT)).thenReturn(true);
+        admitted = true;
         mvc.perform(get("/api/v1/professor/courses?page=1").header("Authorization", bearer(STUDENT)))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.reason").value("FORBIDDEN"));
