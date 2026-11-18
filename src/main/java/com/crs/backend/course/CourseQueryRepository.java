@@ -109,6 +109,29 @@ public class CourseQueryRepository {
                 .list();
     }
 
+    /** 폐강 대상: OPEN이고 현재 인원 < 최소 수강인원(ADM-03-01). 과목코드 ASCII 오름차순 */
+    private static final String CANDIDATE_WHERE =
+            " WHERE c.course_status = 'OPEN' AND c.active_cnt < c.min_enrollment";
+
+    public List<ClosureCandidate> findClosureCandidates(int page) {
+        return jdbc.sql("""
+                        SELECT c.course_code, c.course_title, u.user_name AS professor_name,
+                               c.active_cnt, c.min_enrollment, c.max_capacity
+                          FROM courses c
+                          JOIN users u ON u.user_id = c.professor_id"""
+                        + CANDIDATE_WHERE + " ORDER BY c.course_code COLLATE \"C\" LIMIT :limit OFFSET :offset")
+                .param("limit", CoursePage.PAGE_SIZE)
+                .param("offset", (long) (page - 1) * CoursePage.PAGE_SIZE)
+                .query((rs, i) -> new ClosureCandidate(rs.getString("course_code"), rs.getString("course_title"),
+                        rs.getString("professor_name"), rs.getInt("active_cnt"), rs.getInt("min_enrollment"),
+                        rs.getInt("max_capacity")))
+                .list();
+    }
+
+    public long countClosureCandidates() {
+        return jdbc.sql("SELECT count(*) FROM courses c" + CANDIDATE_WHERE).query(Long.class).single();
+    }
+
     private String select(String studentId, Map<String, Object> params) {
         if (studentId == null) {
             return SELECT.formatted("CAST(NULL AS boolean)");

@@ -25,7 +25,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class CourseWriteService {
 
     /** 잠금 아래에서 읽은 현재 값 */
-    record LockedCourse(String professorId, String status, int capacity, int active) {
+    record LockedCourse(String professorId, String status, int capacity, int active, int minimum) {
     }
 
     private final JdbcClient jdbc;
@@ -133,16 +133,54 @@ public class CourseWriteService {
         }
     }
 
+    /**
+     * CMG-02-03 교수 폐강 · ADM-03-02 관리자 폐강(과목 1건).
+     * 판정: 과목 잠금 → 과목 없음(E04) → [교수면] 담당 교수 아님(403 FORBIDDEN)
+     *       → "OPEN이고 현재 인원 < 최소 수강인원"이 아니면 409 E14(이미 폐강 포함, 멱등 성공 아님)
+     * 효과(한 트랜잭션): ENROLLED 내역 전부 CLOSED로 보존, 과목 CLOSED, 인원 0.
+     *
+     * @param professorId 교수 폐강이면 로그인한 교수 ID, 관리자 폐강이면 null
+     * @return CLOSED로 바뀐 내역 수
+     */
+    @DistributedLock(key = "#courseInstId", keyPrefix = "lock:course:")
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public int close(String courseInstId, String professorId) {
+        LockedCourse course = lock(courseInstId);
+        if (professorId != null && !course.professorId().equals(professorId)) {
+            throw CrsException.forbidden();
+        }
+        if (!"OPEN".equals(course.status())) {
+            throw CrsException.of(HttpStatus.CONFLICT, "E14", "이미 폐강된 과목입니다.");
+        }
+        if (course.active() >= course.minimum()) {
+            throw CrsException.of(HttpStatus.CONFLICT, "E14",
+                    "개설 상태이면서 현재 인원이 최소 수강인원보다 적은 과목만 폐강할 수 있습니다.");
+        }
+        int closedEnrollments = jdbc.sql("""
+                        UPDATE enrollments SET enroll_status = 'CLOSED'
+                         WHERE course_inst_id = :courseInstId AND enroll_status = 'ENROLLED'""")
+                .param("courseInstId", courseInstId)
+                .update();
+        // 상태와 인원을 한 문장에서 바꿔 CHECK(course_status = 'OPEN' OR active_cnt = 0)를 지킨다
+        jdbc.sql("""
+                        UPDATE courses
+                           SET course_status = 'CLOSED', active_cnt = 0, course_updated_at = :now
+                         WHERE course_inst_id = :courseInstId""")
+                .param("now", Timestamp.from(Instant.now())).param("courseInstId", courseInstId)
+                .update();
+        return closedEnrollments;
+    }
+
     /** 과목 행을 잠그고 현재 값을 읽는다. 없으면 404 E04 */
     private LockedCourse lock(String courseInstId) {
         return jdbc.sql("""
-                        SELECT professor_id, course_status, max_capacity, active_cnt
+                        SELECT professor_id, course_status, max_capacity, active_cnt, min_enrollment
                           FROM courses
                          WHERE course_inst_id = :courseInstId
                            FOR NO KEY UPDATE""")
                 .param("courseInstId", courseInstId)
                 .query((rs, i) -> new LockedCourse(rs.getString("professor_id"), rs.getString("course_status"),
-                        rs.getInt("max_capacity"), rs.getInt("active_cnt")))
+                        rs.getInt("max_capacity"), rs.getInt("active_cnt"), rs.getInt("min_enrollment")))
                 .optional()
                 .orElseThrow(() -> CrsException.of(HttpStatus.NOT_FOUND, "E04", "과목을 찾을 수 없습니다"));
     }

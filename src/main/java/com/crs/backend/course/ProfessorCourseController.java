@@ -1,6 +1,7 @@
 package com.crs.backend.course;
 
 import com.crs.backend.auth.CurrentUser;
+import jakarta.servlet.http.HttpServletRequest;
 import java.net.URI;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -28,6 +29,19 @@ public class ProfessorCourseController {
                                              @RequestBody CourseCreateRequest request) {
         CourseView created = service.create(user, request);
         return ResponseEntity.created(URI.create("/api/v1/courses/" + created.courseCode())).body(created);
+    }
+
+    /** POST /professor/courses/{courseCode}/closure : 담당 과목 폐강(본문 없음) */
+    @PostMapping("/courses/{courseCode}/closure")
+    public ResponseEntity<CourseClosureResult> close(@RequestAttribute("currentUser") CurrentUser user,
+                                                     @PathVariable String courseCode,
+                                                     HttpServletRequest request) {
+        return ResponseEntity.ok(service.close(user, courseCode, hasBody(request)));
+    }
+
+    /** 본문 유무: Content-Length > 0 이거나 chunked 전송이면 본문이 있다 */
+    private static boolean hasBody(HttpServletRequest request) {
+        return request.getContentLengthLong() > 0 || request.getHeader("Transfer-Encoding") != null;
     }
 
     /** PUT /professor/courses/{courseCode} : 수정 가능한 6개 필드 전체 교체 */
