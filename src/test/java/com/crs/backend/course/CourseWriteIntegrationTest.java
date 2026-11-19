@@ -15,6 +15,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.crs.backend.TestFixtures;
 import com.crs.backend.TestcontainersConfiguration;
+import com.crs.backend.adapter.out.persistence.jpa.CourseJpaRepository;
 import com.crs.backend.adapter.out.persistence.jpa.UserAccountRepository;
 import com.crs.backend.admin.AdminClosureService;
 import com.crs.backend.admin.CourseClosureBatchRequest;
@@ -23,7 +24,10 @@ import com.crs.backend.admin.AdminEnrollmentRequest;
 import com.crs.backend.admin.AdminEnrollmentService;
 import com.crs.backend.auth.AuthService;
 import com.crs.backend.auth.CurrentUser;
+import com.crs.backend.domain.entity.Course;
 import com.crs.backend.domain.entity.UserAccount;
+import com.crs.backend.domain.exception.EnrollmentException;
+import com.crs.backend.domain.exception.ErrorCode;
 import com.crs.backend.domain.enums.UserRole;
 import com.crs.backend.domain.service.ConcurrencyTestConfig;
 import com.crs.backend.domain.service.EnrollmentService;
@@ -50,6 +54,8 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * BE-09 관리자 배정(POST /admin/enrollments)과 교수 과목 수정(PUT /professor/courses/{code}).
@@ -59,8 +65,6 @@ import org.springframework.test.web.servlet.MockMvc;
 @SpringBootTest(properties = {
         "spring.task.scheduling.enabled=false",
         "queue.scheduler-fixed-delay-ms=3600000",
-        "distributed-lock.wait-time=60",
-        "distributed-lock.lease-time=30",
         "spring.autoconfigure.exclude=org.redisson.spring.starter.RedissonAutoConfigurationV2,org.redisson.spring.starter.RedissonAutoConfigurationV4"
 })
 @ActiveProfiles({"test", "concurrency-test"})
@@ -85,6 +89,9 @@ class CourseWriteIntegrationTest {
     @Autowired AdminEnrollmentService adminEnrollmentService;
     @Autowired ProfessorCourseService professorCourseService;
     @Autowired AdminClosureService adminClosureService;
+    @Autowired CourseJpaRepository courseRepository;
+    @Autowired CourseWriteService courseWriter;
+    @Autowired PlatformTransactionManager txManager;
 
     @BeforeEach
     void seed() {
@@ -664,6 +671,139 @@ class CourseWriteIntegrationTest {
         }
     }
 
+    // ===================== T3 (백엔드 계획 7절) =====================
+
+    /**
+     * T3 동시: 학생 신청 20건과 관리자 배정 5건이 동시에 온다(정원 10).
+     * 단언: INV-2 0행, 중복 내역 없음, 정원 초과분은 관리자 배정뿐.
+     */
+    @Test
+    void T3_동시_학생_신청_20건과_관리자_배정_5건() throws Exception {
+        int capacity = 10;
+        String courseInstId = course("QZ710", PROF_KIM, capacity, 1, "OPEN");
+        List<String> students = new ArrayList<>();
+        java.util.Map<String, Long> tickets = new java.util.HashMap<>();
+        for (int i = 0; i < 20; i++) {
+            String studentId = "qzt" + i;
+            user(studentId, studentId, UserRole.STUDENT);
+            String sessionId = TestFixtures.session(jdbc, studentId, "STUDENT");
+            tickets.put(studentId, TestFixtures.waitingEnrollmentTicket(jdbc, studentId, sessionId, courseInstId, "QZ710"));
+            students.add(studentId);
+        }
+        List<String> assigned = new ArrayList<>();
+        for (int i = 0; i < 5; i++) {
+            String studentId = "qzta" + i;
+            user(studentId, studentId, UserRole.STUDENT);
+            assigned.add(studentId);
+        }
+
+        ExecutorService pool = Executors.newFixedThreadPool(25);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<Boolean>> studentResults = new ArrayList<>();
+        List<Future<Boolean>> adminResults = new ArrayList<>();
+        try {
+            for (String studentId : students) {
+                studentResults.add(pool.submit(() -> {
+                    start.await();
+                    try {
+                        enrollmentService.enrollStudent(studentId, courseInstId, tickets.get(studentId));
+                        return true;
+                    } catch (EnrollmentException rejected) {
+                        // 정원이 찬 뒤의 학생 신청은 E07이어야 한다. 다른 코드는 실패로 드러낸다
+                        assertThat(rejected.getErrorCode()).isEqualTo(ErrorCode.E07);
+                        return false;
+                    }
+                }));
+            }
+            for (String studentId : assigned) {
+                adminResults.add(pool.submit(() -> {
+                    start.await();
+                    adminEnrollmentService.assign(new CurrentUser(ADMIN, "s", UserRole.ADMIN),
+                            new AdminEnrollmentRequest(studentId, "QZ710"));
+                    return true;
+                }));
+            }
+            start.countDown();
+
+            int studentOk = 0;
+            for (Future<Boolean> f : studentResults) if (f.get(60, TimeUnit.SECONDS)) studentOk++;
+            int adminOk = 0;
+            for (Future<Boolean> f : adminResults) if (f.get(60, TimeUnit.SECONDS)) adminOk++;
+
+            long studentRows = countEnrolled(courseInstId, "STUDENT");
+            long adminRows = countEnrolled(courseInstId, "ADMIN");
+            long enrolled = studentRows + adminRows;
+
+            assertThat(adminOk).isEqualTo(5);                 // 관리자 배정은 정원과 무관하게 모두 성공
+            assertThat(studentRows).isEqualTo(studentOk);
+            assertThat(adminRows).isEqualTo(adminOk);
+            assertThat(studentOk).isLessThanOrEqualTo(capacity); // 학생 신청은 정원을 넘기지 않는다
+            assertThat(enrolled).isGreaterThanOrEqualTo(capacity); // 학생 20명이 남은 자리를 모두 채운다
+            assertThat(enrolled - capacity).isLessThanOrEqualTo(adminOk); // 초과분은 관리자 배정뿐
+            assertThat(jdbc.sql("""
+                    SELECT count(*) FROM (
+                      SELECT student_id FROM enrollments
+                       WHERE course_inst_id = :c
+                       GROUP BY student_id HAVING count(*) > 1) x""")
+                    .param("c", courseInstId).query(Long.class).single()).isZero(); // 중복 내역 없음
+            assertThat(activeCnt("QZ710")).isEqualTo((int) enrolled);
+            assertInv2();
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    /**
+     * T3 교차 순서(1.4 혼용 규칙 6의 반례를 고정한다).
+     * 교수 수정 트랜잭션이 인원 0인 과목을 읽은 뒤 과목 잠금 전에 멈춘다 → 학생 신청 1건이 커밋된다
+     * → 교수 수정(강의실 변경)이 이어서 커밋된다. 교수 수정이 잠금 전에 읽은 인원 0을 다시 쓰면 안 된다.
+     */
+    @Test
+    void T3_교차_순서_교수_수정은_잠금_전에_읽은_인원을_덮어쓰지_않는다() throws Exception {
+        String courseInstId = course("QZ720", PROF_KIM, 30, 1, "OPEN");
+        String studentId = "qzx1";
+        user(studentId, studentId, UserRole.STUDENT);
+        String sessionId = TestFixtures.session(jdbc, studentId, "STUDENT");
+        long ticketId = TestFixtures.waitingEnrollmentTicket(jdbc, studentId, sessionId, courseInstId, "QZ720");
+
+        CountDownLatch professorRead = new CountDownLatch(1);
+        CountDownLatch studentCommitted = new CountDownLatch(1);
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            // 교수 수정 트랜잭션: ProfessorCourseService.update와 같은 순서(과목 읽기 → CourseWriteService)
+            Future<Integer> professor = pool.submit(() -> new TransactionTemplate(txManager).execute(tx -> {
+                Course seen = courseRepository.findByCourseCode("QZ720").orElseThrow(); // 잠금 전 읽기
+                professorRead.countDown();
+                try {
+                    if (!studentCommitted.await(30, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("학생 신청 커밋을 기다리다 시간 초과");
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(e);
+                }
+                courseWriter.updateByProfessor(seen.getCourseInstId(), PROF_KIM,
+                        new CourseUpdateRequest("과목", "MAJOR", "RELATIVE", 30, 1, "공학관 720"));
+                return seen.getActiveCnt();
+            }));
+
+            assertThat(professorRead.await(30, TimeUnit.SECONDS)).isTrue();
+            enrollmentService.enrollStudent(studentId, courseInstId, ticketId); // 학생 신청 1건 커밋(인원 1)
+            assertThat(activeCnt("QZ720")).isEqualTo(1);
+            studentCommitted.countDown();
+
+            assertThat(professor.get(60, TimeUnit.SECONDS)).isZero(); // 교수는 인원 0일 때 읽었다
+        } finally {
+            pool.shutdownNow();
+        }
+
+        assertThat(activeCnt("QZ720")).isEqualTo(1); // 교수 수정 뒤에도 인원 1이 남는다
+        assertThat(jdbc.sql("SELECT classroom FROM courses WHERE course_code = 'QZ720'")
+                .query(String.class).single()).isEqualTo("공학관 720"); // 교수 수정도 반영됐다
+        assertThat(countEnrolled(courseInstId, "STUDENT")).isEqualTo(1);
+        assertInv2();
+    }
+
     // ===================== 도우미 =====================
 
     private org.springframework.test.web.servlet.RequestBuilder adminAssign(String studentId, String courseCode) {
@@ -691,6 +831,13 @@ class CourseWriteIntegrationTest {
         return "{\"name\":\"" + name + "\",\"category\":\"" + category + "\",\"evaluationType\":\"" + eval
                 + "\",\"capacity\":" + capacity + ",\"minimumEnrollment\":" + minimum
                 + ",\"classroom\":\"" + classroom + "\"}";
+    }
+
+    private long countEnrolled(String courseInstId, String type) {
+        return jdbc.sql("""
+                SELECT count(*) FROM enrollments
+                 WHERE course_inst_id = :c AND enroll_status = 'ENROLLED' AND enroll_type = :t""")
+                .param("c", courseInstId).param("t", type).query(Long.class).single();
     }
 
     private int activeCnt(String code) {
