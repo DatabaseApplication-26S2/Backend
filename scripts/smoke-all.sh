@@ -89,9 +89,15 @@ run_p23() {
 
   # ===================== 20. PUT /admin/settings =====================
   echo "[20] 서비스 설정 변경 PUT /admin/settings"
-  req PUT /admin/settings "{\"concurrencyLimit\":${N:-100}}" "${AA[@]}"   # 같은 값으로 다시 저장
-  check "200, 변경자 기록(lastChangedBy)" \
-    eval '[ "$STATUS" = 200 ] && [ "$(json_get lastChangedBy)" = "$ADMIN" ]'
+  if [ -n "$N" ]; then
+    req PUT /admin/settings "{\"concurrencyLimit\":$N}" "${AA[@]}"   # 같은 값으로 다시 저장
+    check "200, 변경자 기록(lastChangedBy)" \
+      eval '[ "$STATUS" = 200 ] && [ "$(json_get lastChangedBy)" = "$ADMIN" ]'
+  else
+    # [19]에서 현재 N을 읽지 못했으면 저장하지 않는다. 다른 값을 쓰면 시연 환경의 N이 바뀐다.
+    STATUS="-"
+    check "200, 변경자 기록(lastChangedBy): [19]에서 현재 N을 읽지 못해 건너뜀" false
+  fi
   req PUT /admin/settings '{"concurrencyLimit":0}' "${AA[@]}"
   check "범위 밖(0) → 400 E09" eval '[ "$STATUS" = 400 ] && [ "$(json_get code)" = E09 ]'
 }
