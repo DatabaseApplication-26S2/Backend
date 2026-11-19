@@ -207,7 +207,7 @@ class AuthIntegrationTest {
         long id = Long.parseLong(receipt.ticketId());
         tx.executeWithoutResult(status -> {
             var stale = em.find(WaitingTicket.class, id);
-            stale.markProcessing(); em.flush();
+            stale.markProcessing(jdbc.queryForObject("SELECT clock_timestamp()", java.sql.Timestamp.class).toInstant()); em.flush();
             jdbc.update("UPDATE tickets SET generation_no=generation_no+1,slot_claim_ref=generation_no+1,owner_worker_ref='new-worker' WHERE ticket_id=?", id);
             auth.processLogin(stale);
             assertEquals("PROCESSING", jdbc.queryForObject("SELECT status_cd FROM tickets WHERE ticket_id=?", String.class, id));
