@@ -5,7 +5,6 @@ import com.crs.backend.common.ApiProblem.Source;
 import com.crs.backend.common.ApiProblem.Violation;
 import com.crs.backend.domain.exception.EnrollmentException;
 import com.crs.backend.domain.exception.ErrorCode;
-import com.crs.backend.lock.LockAcquisitionException;
 import com.crs.backend.queue.QueueNotAllowedException;
 import java.util.ArrayList;
 import java.util.List;
@@ -74,13 +73,6 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(QueueNotAllowedException.class)
     public ResponseEntity<Map<String, Object>> notAdmitted(QueueNotAllowedException ex) {
         return ApiProblem.of(HttpStatus.CONFLICT, "E15", "수강신청 화면에 먼저 입장해야 합니다").toResponse();
-    }
-
-    @ExceptionHandler(LockAcquisitionException.class)
-    public ResponseEntity<Map<String, Object>> lock(LockAcquisitionException ex) {
-        // 계약에 없는 코드다(팀 결정 필요). 기존 동작(429 LOCK_NOT_ACQUIRED)을 유지한다.
-        return ApiProblem.of(HttpStatus.TOO_MANY_REQUESTS, ErrorCode.LOCK_NOT_ACQUIRED.name(),
-                "잠시 후 다시 시도해 주세요").toResponse();
     }
 
     @ExceptionHandler(IllegalArgumentException.class)

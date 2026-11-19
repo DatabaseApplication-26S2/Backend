@@ -16,7 +16,7 @@ docker compose up -d db redis    # PostgreSQL 17 (포트 5433), Redis 7 (포트 
 - 패키지: `com.crs.backend`
 - 프로파일: `local`, `test`, `demo`
 - DB 스키마: `src/main/resources/db/migration` (Flyway)
-- Redis: 대기열과 분산 락이 쓴다. 실행 전에 `redis` 컨테이너를 띄운다.
+- Redis: 대기 순번 사본(`waiting_queue`)이 쓴다. 실행 전에 `redis` 컨테이너를 띄운다.
 - 보안 설정: `auth/AuthSecurity`
 - 시드: local·demo에서 Flyway V900이 학생 60명·교수 3명·관리자 1명·과목 25개를 만든다. 계정·리셋·팀 연동 범위는 TESTING.md 참고.
 

@@ -21,8 +21,7 @@ public enum ErrorCode {
     E13(HttpStatus.UNPROCESSABLE_ENTITY, "학생 계정이 아님"),
     E14(HttpStatus.CONFLICT, "폐강 대상 아님"),
     E15(HttpStatus.CONFLICT, "수강신청 화면 미입장"),
-    E99(HttpStatus.CONFLICT, "재투입 한도 소진"),
-    LOCK_NOT_ACQUIRED(HttpStatus.TOO_MANY_REQUESTS, "분산 락 획득 실패");
+    E99(HttpStatus.CONFLICT, "재투입 한도 소진");
 
     private final HttpStatus httpStatus;
     private final String message;

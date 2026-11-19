@@ -47,7 +47,7 @@ Check the connection/database name before running it.
 
 ```powershell
 Get-Content scripts/reset-demo.sql -Raw | docker compose exec -T db psql -U crs -d crs -v ON_ERROR_STOP=1
-docker compose exec -T redis redis-cli DEL waiting_queue active_users
+docker compose exec -T redis redis-cli DEL waiting_queue
 ```
 
 Use configured queue keys if renamed. Then restart the backend.
