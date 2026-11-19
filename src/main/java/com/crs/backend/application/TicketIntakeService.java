@@ -9,9 +9,12 @@ import com.crs.backend.domain.enums.TicketStatus;
 import com.crs.backend.domain.exception.EnrollmentException;
 import com.crs.backend.domain.exception.ErrorCode;
 import com.crs.backend.queue.RedisWaitingOrderCopy;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.sql.Timestamp;
+import java.time.Instant;
 import java.util.EnumSet;
 import java.util.Optional;
 import java.util.Set;
@@ -29,13 +32,16 @@ public class TicketIntakeService implements TicketIntake {
 
     private final WaitingTicketJpaRepository waitingTicketRepository;
     private final RedisWaitingOrderCopy waitingOrderCopy;
+    private final JdbcTemplate jdbc;
 
     public TicketIntakeService(
             WaitingTicketJpaRepository waitingTicketRepository,
-            RedisWaitingOrderCopy waitingOrderCopy
+            RedisWaitingOrderCopy waitingOrderCopy,
+            JdbcTemplate jdbc
     ) {
         this.waitingTicketRepository = waitingTicketRepository;
         this.waitingOrderCopy = waitingOrderCopy;
+        this.jdbc = jdbc;
     }
 
     @Override
@@ -43,7 +49,7 @@ public class TicketIntakeService implements TicketIntake {
     public TicketReceipt intakeAdmission(String userId, String sessionId) {
         validateUserId(userId);
         rejectIfIncomplete(userId);
-        return persistAndPublish(WaitingTicket.admission(userId, sessionId));
+        return persistAndPublish(WaitingTicket.admission(userId, sessionId, issuedAt()));
     }
 
     @Override
@@ -51,7 +57,7 @@ public class TicketIntakeService implements TicketIntake {
     public TicketReceipt intakeEnrollment(String userId, String sessionId, String courseInstId, String courseCode) {
         validateUserId(userId);
         rejectIfIncomplete(userId);
-        return persistAndPublish(WaitingTicket.enrollment(userId, sessionId, courseInstId, courseCode));
+        return persistAndPublish(WaitingTicket.enrollment(userId, sessionId, courseInstId, courseCode, issuedAt()));
     }
 
     @Override
@@ -59,7 +65,12 @@ public class TicketIntakeService implements TicketIntake {
     public TicketReceipt intakeCancellation(String userId, String sessionId, String courseInstId, String courseCode) {
         validateUserId(userId);
         rejectIfIncomplete(userId);
-        return persistAndPublish(WaitingTicket.cancellation(userId, sessionId, courseInstId, courseCode));
+        return persistAndPublish(WaitingTicket.cancellation(userId, sessionId, courseInstId, courseCode, issuedAt()));
+    }
+
+    /** 접수 시각(구현계획 4절 (1)): 접수 트랜잭션 안에서 DB 시계 clock_timestamp()를 읽는다 */
+    private Instant issuedAt() {
+        return jdbc.queryForObject("SELECT clock_timestamp()", Timestamp.class).toInstant();
     }
 
     private TicketReceipt persistAndPublish(WaitingTicket ticket) {

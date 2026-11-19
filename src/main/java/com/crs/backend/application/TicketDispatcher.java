@@ -11,10 +11,13 @@ import com.crs.backend.queue.RedisWaitingOrderCopy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.sql.Timestamp;
+import java.time.Instant;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -29,6 +32,7 @@ public class TicketDispatcher {
 
     private final ServiceSettingsRepository serviceSettingsRepository;
     private final WaitingTicketJpaRepository waitingTicketRepository;
+    private final JdbcTemplate jdbc;
     private final RedisWaitingOrderCopy waitingOrderCopy;
     private final Map<TicketRequestType, TicketHandler> handlers;
     private final TransactionTemplate claimTx;
@@ -36,12 +40,14 @@ public class TicketDispatcher {
     public TicketDispatcher(
             ServiceSettingsRepository serviceSettingsRepository,
             WaitingTicketJpaRepository waitingTicketRepository,
+            JdbcTemplate jdbc,
             RedisWaitingOrderCopy waitingOrderCopy,
             List<TicketHandler> handlerList,
             PlatformTransactionManager transactionManager
     ) {
         this.serviceSettingsRepository = serviceSettingsRepository;
         this.waitingTicketRepository = waitingTicketRepository;
+        this.jdbc = jdbc;
         this.waitingOrderCopy = waitingOrderCopy;
         this.handlers = new EnumMap<>(TicketRequestType.class);
         for (TicketHandler handler : handlerList) {
@@ -91,9 +97,13 @@ public class TicketDispatcher {
             return List.of();
         }
 
+        // 배정 기준 시각 :claimed_at(구현계획 4절 (3)). 회계 잠금을 얻은 뒤 DB 시계에서 한 번 읽어 이 배치 전체에 쓴다.
+        // 배정할 WAITING 행을 잠근 뒤에 읽으므로 그 티켓들의 접수 시각보다 늦다.
+        Instant claimedAt = jdbc.queryForObject("SELECT clock_timestamp()", Timestamp.class).toInstant();
+
         for (WaitingTicket ticket : claimed) {
-            // 세대 +1, 슬롯 = 세대, 소유자 = WaitingTicket.WORKER_REF, 리스 = 지금 + WaitingTicket.LEASE (tickets CHECK 3)
-            ticket.markProcessing();
+            // 세대 +1, 슬롯 = 세대, 소유자 = WaitingTicket.WORKER_REF, 리스 = claimedAt + WaitingTicket.LEASE (tickets CHECK 3)
+            ticket.markProcessing(claimedAt);
             waitingTicketRepository.save(ticket);
             waitingOrderCopy.removeAfterCommit(ticket.getTicketId());
         }
