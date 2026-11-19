@@ -35,13 +35,8 @@ management:
 app:
   frontend-origin: http://localhost:5173
 
-distributed-lock:
-  wait-time: 5
-  lease-time: 10
-
 queue:
   waiting-key: waiting_queue
-  active-key: active_users
   admit-batch-size: 50
   active-ttl-minutes: 5
   scheduler-fixed-delay-ms: 1000

@@ -9,4 +9,4 @@ COMMIT;
 SELECT c.course_code,c.active_cnt,count(e.student_id) AS actual_count
 FROM courses c LEFT JOIN enrollments e ON e.course_inst_id=c.course_inst_id AND e.enroll_status='ENROLLED'
 GROUP BY c.course_inst_id HAVING c.active_cnt<>count(e.student_id);
--- Before restarting workers: redis-cli DEL waiting_queue active_users (or configured keys).
+-- Before restarting workers: redis-cli DEL waiting_queue (or the configured queue.waiting-key).

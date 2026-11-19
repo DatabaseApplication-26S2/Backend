@@ -40,8 +40,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest(properties = {
         "spring.task.scheduling.enabled=false",
         "queue.scheduler-fixed-delay-ms=3600000",
-        "distributed-lock.wait-time=60",
-        "distributed-lock.lease-time=30",
         "spring.autoconfigure.exclude=org.redisson.spring.starter.RedissonAutoConfigurationV2,org.redisson.spring.starter.RedissonAutoConfigurationV4"
 })
 @ActiveProfiles({"test", "concurrency-test"})

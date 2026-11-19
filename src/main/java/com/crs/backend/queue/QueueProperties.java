@@ -6,7 +6,6 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public class QueueProperties {
 
     private String waitingKey = "waiting_queue";
-    private String activeKey = "active_users";
     private int admitBatchSize = 50;
     private long activeTtlMinutes = 5L;
     private long schedulerFixedDelayMs = 1000L;
@@ -17,14 +16,6 @@ public class QueueProperties {
 
     public void setWaitingKey(String waitingKey) {
         this.waitingKey = waitingKey;
-    }
-
-    public String getActiveKey() {
-        return activeKey;
-    }
-
-    public void setActiveKey(String activeKey) {
-        this.activeKey = activeKey;
     }
 
     public int getAdmitBatchSize() {

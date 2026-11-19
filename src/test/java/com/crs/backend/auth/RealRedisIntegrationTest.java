@@ -43,7 +43,6 @@ class RealRedisIntegrationTest {
         registry.add("spring.data.redis.host", redisContainer::getHost);
         registry.add("spring.data.redis.port", () -> redisContainer.getMappedPort(6379));
         registry.add("queue.waiting-key", () -> PREFIX + ":waiting");
-        registry.add("queue.active-key", () -> PREFIX + ":active");
     }
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper json;

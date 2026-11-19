@@ -5,7 +5,7 @@ import com.crs.backend.domain.entity.Course;
 import java.util.Optional;
 
 /**
- * 과목 행 잠금. Redis 분산 락 대신 DB 행 잠금을 사용한다.
+ * 과목 행 잠금. 같은 과목의 쓰기는 DB 행 잠금으로 직렬화한다.
  */
 public interface CourseLock {
 

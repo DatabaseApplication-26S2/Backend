@@ -6,7 +6,8 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
- * 1초마다 waiting_queue 상위 50명을 active_users로 이동시킨다.
+ * 디스패처 트리거. 1초마다 TicketDispatcher.claimAndDispatch()를 불러
+ * DB의 WAITING 티켓을 N′ = max(N − PROCESSING, 0)건까지 claim하고 유형별 핸들러를 실행한다.
  */
 @Component
 public class QueueAdmissionScheduler {
@@ -23,7 +24,7 @@ public class QueueAdmissionScheduler {
     public void admitWaitingUsers() {
         int admitted = queueService.admitWaitingUsers();
         if (admitted > 0) {
-            log.debug("Admitted {} users from waiting_queue to active_users", admitted);
+            log.debug("Claimed and dispatched {} tickets", admitted);
         }
     }
 }

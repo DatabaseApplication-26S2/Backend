@@ -2,7 +2,6 @@ package com.crs.backend.course;
 
 import com.crs.backend.admin.AdminEnrollmentResult;
 import com.crs.backend.common.CrsException;
-import com.crs.backend.lock.DistributedLock;
 import java.sql.Timestamp;
 import java.time.Instant;
 import org.springframework.http.HttpStatus;
@@ -14,8 +13,8 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * 같은 과목 잠금 아래에서 실행하는 과목 변경(BE-09).
  *
- * 잠금 순서는 학생 수강신청(EnrollmentService)과 같다.
- *   과목 단위 분산 락(lock:course:{id}) → 새 트랜잭션 → 과목 행 잠금 → 재검증 → 쓰기 → 커밋 → 락 해제
+ * 잠금 순서는 학생 수강신청(EnrollmentWriter)과 같다. 같은 과목 행을 DB 행 잠금으로 직렬화한다.
+ *   새 트랜잭션 → 과목 행 잠금(FOR NO KEY UPDATE) → 재검증 → 쓰기 → 커밋(잠금 해제)
  *
  * 규칙(구현계획 1.4 혼용 규칙 6):
  *   잠금 전에 읽은 과목 엔티티로 판단하거나 쓰지 않는다. 잠금이 돌려준 현재 값으로만 판단하고,
@@ -38,7 +37,6 @@ public class CourseWriteService {
      * ADM-01-01 관리자 배정. 정원 검사만 생략한다(정원을 넘을 수 있음).
      * 판정: 과목 잠금 → 과목 없음(E04) → 폐강(E05) → 이미 신청(E06) → 내역 생성 + 인원 +1
      */
-    @DistributedLock(key = "#courseInstId", keyPrefix = "lock:course:")
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public AdminEnrollmentResult assignByAdmin(String courseInstId, String courseCode,
                                                String studentId, String adminId) {
@@ -79,7 +77,6 @@ public class CourseWriteService {
      * 판정: 과목 잠금 → 과목 없음(E04) → 담당 교수 아님(403 FORBIDDEN) → 폐강(E05)
      *       → 정원을 바꿨고 새 정원 < 현재 인원(E11) → 6개 컬럼과 수정 시각만 UPDATE
      */
-    @DistributedLock(key = "#courseInstId", keyPrefix = "lock:course:")
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void updateByProfessor(String courseInstId, String professorId, CourseUpdateRequest req) {
         LockedCourse course = lock(courseInstId);
@@ -142,7 +139,6 @@ public class CourseWriteService {
      * @param professorId 교수 폐강이면 로그인한 교수 ID, 관리자 폐강이면 null
      * @return CLOSED로 바뀐 내역 수
      */
-    @DistributedLock(key = "#courseInstId", keyPrefix = "lock:course:")
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public int close(String courseInstId, String professorId) {
         LockedCourse course = lock(courseInstId);
