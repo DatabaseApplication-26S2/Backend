@@ -36,7 +36,7 @@ bash scripts/smoke-all.sh
 |---|---|---|
 | [1]~[17] | 통과 | 1단계 + BE-12·13 |
 | [18] | 통과 | BE-11의 재사용 탐지(`REFRESH_TOKEN_REUSED`)가 통합본에 들어옴 |
-| [19]·[20] 성공 확인 | 실패(⏳) | `/admin/settings` 컨트롤러가 아직 없음(BE-14, 팀원1) |
+| [19]·[20] | 통과 | BE-14 서비스 설정 구현(`feature/sub-course-admin-m4`, 11/20). [20]은 N을 1 바꿨다가 되돌린다 |
 | [19] 교수 403 | 통과 | 보안 필터가 먼저 막음 |
 
 진행 방식: 끝난 연산부터 표를 채우고, 선행 패키지가 끝나는 대로 나머지를 확인한다(9.4절).
@@ -64,8 +64,8 @@ bash scripts/smoke-all.sh
 | 16 | `GET /admin/closure-candidates` | BE-13(팀원3) | 200 페이지 | `page=0` → 400 E09 | |
 | 17 | `POST /admin/course-closures` | BE-13(팀원3) | 200, 입력 순서 OK·E04 | 빈 배열 → 400 E09 | |
 | 18 | `POST /auth/refresh` | BE-11(팀원2) | 200 새 토큰 + 새 Refresh(회전) | 재사용 → 401 `REFRESH_TOKEN_REUSED` | |
-| 19 | `GET /admin/settings` | BE-14(팀원1) | 200 N·슬롯·대기 수 | 교수 → 403 E02 | |
-| 20 | `PUT /admin/settings` | BE-14(팀원1) | 200, 변경자 기록 | 범위 밖(0) → 400 E09 | |
+| 19 | `GET /admin/settings` | BE-14(팀원3) | 200 N·슬롯·대기 수 | 교수 → 403 E02 | |
+| 20 | `PUT /admin/settings` | BE-14(팀원3) | 200, 새 N·변경자 기록 | 범위 밖(0) → 400 E09 | |
 
 **실행 기록:** (날짜·브랜치·결과를 적는다)
 
