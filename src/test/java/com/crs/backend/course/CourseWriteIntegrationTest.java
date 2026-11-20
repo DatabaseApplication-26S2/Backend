@@ -15,7 +15,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.crs.backend.TestFixtures;
 import com.crs.backend.TestcontainersConfiguration;
-import com.crs.backend.adapter.out.persistence.jpa.CourseJpaRepository;
 import com.crs.backend.adapter.out.persistence.jpa.UserAccountRepository;
 import com.crs.backend.admin.AdminClosureService;
 import com.crs.backend.admin.CourseClosureBatchRequest;
@@ -24,7 +23,6 @@ import com.crs.backend.admin.AdminEnrollmentRequest;
 import com.crs.backend.admin.AdminEnrollmentService;
 import com.crs.backend.auth.AuthService;
 import com.crs.backend.auth.CurrentUser;
-import com.crs.backend.domain.entity.Course;
 import com.crs.backend.domain.entity.UserAccount;
 import com.crs.backend.domain.exception.EnrollmentException;
 import com.crs.backend.domain.exception.ErrorCode;
@@ -32,6 +30,10 @@ import com.crs.backend.domain.enums.UserRole;
 import com.crs.backend.domain.service.ConcurrencyTestConfig;
 import com.crs.backend.domain.service.EnrollmentService;
 import com.crs.backend.queue.QueueService;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -42,6 +44,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.redisson.api.RScoredSortedSet;
@@ -54,8 +57,6 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * BE-09 관리자 배정(POST /admin/enrollments)과 교수 과목 수정(PUT /professor/courses/{code}).
@@ -89,9 +90,7 @@ class CourseWriteIntegrationTest {
     @Autowired AdminEnrollmentService adminEnrollmentService;
     @Autowired ProfessorCourseService professorCourseService;
     @Autowired AdminClosureService adminClosureService;
-    @Autowired CourseJpaRepository courseRepository;
-    @Autowired CourseWriteService courseWriter;
-    @Autowired PlatformTransactionManager txManager;
+    @Autowired DataSource dataSource;
 
     @BeforeEach
     void seed() {
@@ -755,8 +754,11 @@ class CourseWriteIntegrationTest {
 
     /**
      * T3 교차 순서(1.4 혼용 규칙 6의 반례를 고정한다).
-     * 교수 수정 트랜잭션이 인원 0인 과목을 읽은 뒤 과목 잠금 전에 멈춘다 → 학생 신청 1건이 커밋된다
-     * → 교수 수정(강의실 변경)이 이어서 커밋된다. 교수 수정이 잠금 전에 읽은 인원 0을 다시 쓰면 안 된다.
+     * 실제 교수 수정 경로(ProfessorCourseService.update)가 과목 잠금에서 멈춘 사이 학생 신청 1건이 커밋된다.
+     * 1) 별도 연결이 과목 행을 FOR NO KEY UPDATE로 잡는다. 교수 수정은 과목을 읽은 뒤 이 잠금 앞에서 기다린다.
+     * 2) 교수 수정(강의실 변경)을 다른 스레드에서 시작하고 pg_blocking_pids로 잠금 대기를 확인한다.
+     * 3) 잠금을 쥔 트랜잭션이 학생 신청 내역 1건과 인원 +1을 커밋해 잠금을 푼다.
+     * 4) 교수 수정이 끝난 뒤 인원 1, 강의실 변경, INV-2 0행. 교수 수정이 잠금 전에 읽은 값으로 쓰면 인원이 0으로 돌아간다.
      */
     @Test
     void T3_교차_순서_교수_수정은_잠금_전에_읽은_인원을_덮어쓰지_않는다() throws Exception {
@@ -764,35 +766,54 @@ class CourseWriteIntegrationTest {
         String studentId = "qzx1";
         user(studentId, studentId, UserRole.STUDENT);
         String sessionId = TestFixtures.session(jdbc, studentId, "STUDENT");
-        long ticketId = TestFixtures.waitingEnrollmentTicket(jdbc, studentId, sessionId, courseInstId, "QZ720");
+        long sourceTicketId = TestFixtures.succeededEnrollmentTicket(jdbc, studentId, sessionId, courseInstId, "QZ720");
+        assertThat(activeCnt("QZ720")).isZero();
 
-        CountDownLatch professorRead = new CountDownLatch(1);
-        CountDownLatch studentCommitted = new CountDownLatch(1);
         ExecutorService pool = Executors.newSingleThreadExecutor();
-        try {
-            // 교수 수정 트랜잭션: ProfessorCourseService.update와 같은 순서(과목 읽기 → CourseWriteService)
-            Future<Integer> professor = pool.submit(() -> new TransactionTemplate(txManager).execute(tx -> {
-                Course seen = courseRepository.findByCourseCode("QZ720").orElseThrow(); // 잠금 전 읽기
-                professorRead.countDown();
-                try {
-                    if (!studentCommitted.await(30, TimeUnit.SECONDS)) {
-                        throw new IllegalStateException("학생 신청 커밋을 기다리다 시간 초과");
-                    }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new IllegalStateException(e);
-                }
-                courseWriter.updateByProfessor(seen.getCourseInstId(), PROF_KIM,
-                        new CourseUpdateRequest("과목", "MAJOR", "RELATIVE", 30, 1, "공학관 720"));
-                return seen.getActiveCnt();
-            }));
+        try (Connection lock = dataSource.getConnection()) {
+            lock.setAutoCommit(false);
+            int lockHolder;
+            try (Statement st = lock.createStatement(); ResultSet rs = st.executeQuery("SELECT pg_backend_pid()")) {
+                rs.next();
+                lockHolder = rs.getInt(1);
+            }
+            try (PreparedStatement ps = lock.prepareStatement(
+                    "SELECT 1 FROM courses WHERE course_inst_id = CAST(? AS uuid) FOR NO KEY UPDATE")) {
+                ps.setString(1, courseInstId);
+                ps.executeQuery().close();
+            }
 
-            assertThat(professorRead.await(30, TimeUnit.SECONDS)).isTrue();
-            enrollmentService.enrollStudent(studentId, courseInstId, ticketId); // 학생 신청 1건 커밋(인원 1)
-            assertThat(activeCnt("QZ720")).isEqualTo(1);
-            studentCommitted.countDown();
+            Future<CourseView> professor = pool.submit(() -> professorCourseService.update(
+                    new CurrentUser(PROF_KIM, "s", UserRole.PROFESSOR), "QZ720",
+                    new CourseUpdateRequest("과목", "MAJOR", "RELATIVE", 30, 1, "공학관 720")));
 
-            assertThat(professor.get(60, TimeUnit.SECONDS)).isZero(); // 교수는 인원 0일 때 읽었다
+            // 자동 커밋 조회마다 통계 스냅샷이 새로 잡힌다
+            boolean blocked = false;
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
+            while (!blocked && System.nanoTime() < deadline) {
+                assertThat(professor.isDone()).as("교수 수정이 과목 잠금을 기다리지 않고 끝났다").isFalse();
+                blocked = jdbc.sql("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE :holder = ANY(pg_blocking_pids(pid)))")
+                        .param("holder", lockHolder).query(Boolean.class).single();
+                if (!blocked) Thread.sleep(10);
+            }
+            assertThat(blocked).as("교수 수정이 과목 잠금에서 기다린다").isTrue();
+
+            // 잠금을 쥔 트랜잭션에서 학생 신청 1건을 커밋한다(인원 0 → 1)
+            try (PreparedStatement insert = lock.prepareStatement("""
+                    INSERT INTO enrollments (student_id, course_inst_id, enroll_status, enroll_type, enrolled_at, source_ticket_id)
+                    VALUES (?, CAST(? AS uuid), 'ENROLLED', 'STUDENT', clock_timestamp(), ?)""");
+                 PreparedStatement increment = lock.prepareStatement(
+                    "UPDATE courses SET active_cnt = active_cnt + 1 WHERE course_inst_id = CAST(? AS uuid)")) {
+                insert.setString(1, studentId);
+                insert.setString(2, courseInstId);
+                insert.setLong(3, sourceTicketId);
+                assertThat(insert.executeUpdate()).isEqualTo(1);
+                increment.setString(1, courseInstId);
+                assertThat(increment.executeUpdate()).isEqualTo(1);
+            }
+            lock.commit();
+
+            assertThat(professor.get(60, TimeUnit.SECONDS).classroom()).isEqualTo("공학관 720");
         } finally {
             pool.shutdownNow();
         }

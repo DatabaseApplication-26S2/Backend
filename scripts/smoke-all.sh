@@ -89,12 +89,19 @@ run_p23() {
 
   # ===================== 20. PUT /admin/settings =====================
   echo "[20] 서비스 설정 변경 PUT /admin/settings"
-  # 같은 값은 변경자를 기록하지 않으므로(계약) 1만큼 바꿨다가 원래 N으로 되돌린다
-  local N2; if [ "${N:-100}" -ge 1000 ]; then N2=$(( ${N:-100} - 1 )); else N2=$(( ${N:-100} + 1 )); fi
-  req PUT /admin/settings "{\"concurrencyLimit\":$N2}" "${AA[@]}"
-  check "200, 새 N과 변경자 기록(lastChangedBy)" \
-    eval '[ "$STATUS" = 200 ] && [ "$(json_get concurrencyLimit)" = "$N2" ] && [ "$(json_get lastChangedBy)" = "$ADMIN" ]'
-  req PUT /admin/settings "{\"concurrencyLimit\":${N:-100}}" "${AA[@]}"   # 원래 값으로 복구
+  if [ -n "$N" ]; then
+    # 같은 값은 변경자를 기록하지 않으므로(계약) 1만큼 바꿔 확인하고 곧바로 원래 N으로 되돌린다
+    local N2; if [ "$N" -ge 1000 ]; then N2=$((N - 1)); else N2=$((N + 1)); fi
+    req PUT /admin/settings "{\"concurrencyLimit\":$N2}" "${AA[@]}"
+    check "200, 새 N과 변경자 기록(lastChangedBy)" \
+      eval '[ "$STATUS" = 200 ] && [ "$(json_get concurrencyLimit)" = "$N2" ] && [ "$(json_get lastChangedBy)" = "$ADMIN" ]'
+    req PUT /admin/settings "{\"concurrencyLimit\":$N}" "${AA[@]}"   # 원래 값으로 복구
+    check "원래 N으로 복구" eval '[ "$STATUS" = 200 ] && [ "$(json_get concurrencyLimit)" = "$N" ]'
+  else
+    # [19]에서 현재 N을 읽지 못했으면 저장하지 않는다. 다른 값을 쓰면 시연 환경의 N이 바뀐다.
+    STATUS="-"
+    check "200, 변경자 기록(lastChangedBy): [19]에서 현재 N을 읽지 못해 건너뜀" false
+  fi
   req PUT /admin/settings '{"concurrencyLimit":0}' "${AA[@]}"
   check "범위 밖(0) → 400 E09" eval '[ "$STATUS" = 400 ] && [ "$(json_get code)" = E09 ]'
 }
