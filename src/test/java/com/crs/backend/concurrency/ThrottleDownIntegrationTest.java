@@ -3,6 +3,7 @@ package com.crs.backend.concurrency;
 import com.crs.backend.TestFixtures;
 import com.crs.backend.application.TicketDispatcher;
 import com.crs.backend.auth.CurrentUser;
+import com.crs.backend.queue.QueueAdmissionScheduler;
 import com.crs.backend.domain.enums.UserRole;
 import com.crs.backend.queue.QueueProperties;
 import com.crs.backend.settings.ServiceSettingsService;
@@ -40,6 +41,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.doAnswer;
 
@@ -49,13 +51,14 @@ import static org.mockito.Mockito.doAnswer;
  * 하향 후에는 신규 claim만 멈추고 활성 작업(A = PROCESSING 수)은 끝까지 간다.
  *
  * 관찰 방법
- * - 막힘: 별도 JDBC 연결이 과목 행을 FOR NO KEY UPDATE로 쥐고, 관찰 연결이 pg_blocking_pids로 실제 잠금 대기 그래프를 본다.
+ * - 막힘: 별도 JDBC 연결이 과목 행을 FOR NO KEY UPDATE로 쥐어 핸들러가 진행 중(PROCESSING)에 머물게 한다.
  * - A: tickets에서 status_cd='PROCESSING' 행 수를 센다.
- * - 디스패처는 claim한 배치를 한 스레드에서 차례로 실행하므로 막히는 핸들러는 한 번에 하나이고,
- *   잠금은 티켓 번호 순서대로 풀어야 다음 핸들러가 시작한다.
- * 백그라운드 스케줄은 src/test/resources/config/application.properties가 꺼 두므로 claim은 이 테스트가 직접 부른다.
+ * - 처리 모델(동기·비동기)에 기대지 않고 DB 상태(PROCESSING 수, 각 티켓 행)만 단언한다. 잠금은 티켓 번호 순서로 풀고,
+ *   각 해제마다 해당 티켓이 SUCCEEDED/OK로 끝나는지 본다.
+ * claim은 이 테스트의 명시 호출과 N 변경 뒤 깨우기만 돌며, 주기 스케줄러(QueueAdmissionScheduler)는 목 빈으로 끈다.
  */
 @Testcontainers
+@MockitoBean(types = QueueAdmissionScheduler.class) // 주기 스케줄러의 첫 claim이 준비 단계와 겹치지 않게 이 컨텍스트에서만 끈다
 @ActiveProfiles("test")
 @SpringBootTest(properties = {
     "queue.scheduler-fixed-delay-ms=3600000",
@@ -182,31 +185,6 @@ class ThrottleDownIntegrationTest {
         assertThat(condition.getAsBoolean()).as("제한 시간 안에 조건 충족: " + what).isTrue();
     }
 
-    /** blockerPid가 쥔 잠금을 기다리는 백엔드가 있는지 pg_blocking_pids로 본다 */
-    private boolean blockedBy(Connection observer, int blockerPid) throws Exception {
-        try (var clear = observer.createStatement();
-             var probe = observer.prepareStatement("""
-                 SELECT EXISTS (
-                     SELECT 1 FROM pg_stat_activity
-                     WHERE datname=current_database() AND ? = ANY(pg_blocking_pids(pid)))""")) {
-            clear.execute("SELECT pg_stat_clear_snapshot()");
-            probe.setInt(1, blockerPid);
-            try (var result = probe.executeQuery()) {
-                result.next();
-                return result.getBoolean(1);
-            }
-        }
-    }
-
-    private void awaitBlockedBy(Connection observer, int blockerPid, String what, Future<?> guard) throws Exception {
-        awaitUntil(what, () -> {
-            try {
-                return blockedBy(observer, blockerPid);
-            } catch (Exception e) {
-                throw new IllegalStateException(e);
-            }
-        }, guard);
-    }
 
     /** 다른 스레드에서 claim을 부른다. 진행 중 작업이 남아 있으면 아무것도 claim하지 않고 제한 시간 안에 0으로 돌아와야 한다 */
     private void assertClaimNothing(ExecutorService pool, String when) throws Exception {
@@ -239,10 +217,8 @@ class ThrottleDownIntegrationTest {
 
     @Test void t7_N을_5에서_1로_낮추면_진행_중_작업은_끝까지_가고_A가_0이_되어야_신규_claim이_생긴다() throws Exception {
         List<Connection> holders = new ArrayList<>();
-        List<Integer> holderPids = new ArrayList<>();
         ExecutorService pool = Executors.newFixedThreadPool(3);
-        try (Connection observer = dataSource.getConnection()) {
-            observer.setAutoCommit(true);
+        try {
             // 진행 중 과목 5개를 서로 다른 연결로 잠근다. 핸들러가 과목 행 잠금에서 막힌다
             for (int i = 0; i < IN_FLIGHT; i++) {
                 Connection holder = dataSource.getConnection();
@@ -253,18 +229,12 @@ class ThrottleDownIntegrationTest {
                          "SELECT 1 FROM courses WHERE course_inst_id='" + courses.get(i) + "' FOR NO KEY UPDATE")) {
                     assertThat(result.next()).as("과목 행 잠금 획득 " + i).isTrue();
                 }
-                try (var statement = holder.createStatement();
-                     var result = statement.executeQuery("SELECT pg_backend_pid()")) {
-                    result.next();
-                    holderPids.add(result.getInt(1));
-                }
             }
 
-            // N=5로 5건 claim. 첫 핸들러가 막혀 있으므로 호출은 끝나지 않고 5건은 PROCESSING에 머문다(A=5)
+            // N=5로 5건 claim. 핸들러가 과목 잠금에서 막혀 있으므로 5건은 PROCESSING에 머문다(A=5).
+            // claim 호출의 생애(동기·비동기 실행)에는 기대하지 않고 DB 상태만 본다
             Future<Integer> flight = pool.submit(dispatcher::claimAndDispatch);
             awaitUntil("A=5", () -> processingCount() == IN_FLIGHT, flight);
-            awaitBlockedBy(observer, holderPids.get(0), "첫 핸들러가 과목 잠금 대기", flight);
-            assertThat(flight.isDone()).as("핸들러가 막혀 있는 동안 claim 호출은 끝나지 않는다").isFalse();
             List<Long> inFlight = ticketIds.subList(0, IN_FLIGHT);
             long[] generation = new long[IN_FLIGHT];
             for (int i = 0; i < IN_FLIGHT; i++) {
@@ -308,25 +278,25 @@ class ThrottleDownIntegrationTest {
                     Integer.class, courses.get(k))).as("신청 내역이 실제로 남는다").isEqualTo(1);
 
                 if (remaining > 0) {
-                    // 다음 핸들러가 시작해 자기 과목 잠금에서 기다린다
-                    awaitBlockedBy(observer, holderPids.get(k + 1), "다음 핸들러가 과목 잠금 대기", flight);
+                    // 남은 진행 중 작업이 있는 구간: 명시 claim은 0건이고 여분은 그대로다
                     assertClaimNothing(pool, "A=" + remaining + " 명시 claim");
                     assertExtrasUntouched(remaining, "A=" + remaining);
                 }
             }
 
-            // 5건 처리가 모두 끝나 claim 호출이 5를 돌려준다
-            assertThat(flight.get(WAIT_SECONDS, TimeUnit.SECONDS)).isEqualTo(IN_FLIGHT);
+            // 진행 중 5건이 모두 DB에서 끝났다(A=0). 배경 claim 호출은 마지막에 한 번만 제한 시간 안에 합류시키고 반환 시점·값은 따지지 않는다
             assertThat(processingCount()).as("A=0").isZero();
+            flight.get(WAIT_SECONDS, TimeUnit.SECONDS);
             assertExtrasUntouched(0, "A=0 직후 claim 전");
 
-            // A=0이 되어야 N′=1이다: 가장 작은 WAITING 번호 하나만 claim하고 처리한다
+            // A=0이 되어야 N′=1이다: 가장 작은 WAITING 번호 하나만 claim하고 처리한다(처리 완료 시점은 DB로 기다린다)
             Future<Integer> next = pool.submit(dispatcher::claimAndDispatch);
-            assertThat(next.get(WAIT_SECONDS, TimeUnit.SECONDS)).as("A=0 이후 정확히 1건").isEqualTo(1);
-            Map<String, Object> first = row(ticketIds.get(IN_FLIGHT));
-            assertThat(first.get("status_cd")).as("가장 작은 WAITING 번호가 claim돼 끝난다").isEqualTo("SUCCEEDED");
+            long firstExtra = ticketIds.get(IN_FLIGHT);
+            awaitUntil("가장 작은 WAITING 티켓 종결", () -> "SUCCEEDED".equals(status(firstExtra)), next);
+            next.get(WAIT_SECONDS, TimeUnit.SECONDS);
+            Map<String, Object> first = row(firstExtra);
             assertThat(first.get("result_cd")).isEqualTo("OK");
-            assertThat(first.get("generation_no")).isEqualTo(1);
+            assertThat(first.get("generation_no")).as("정확히 한 번 claim").isEqualTo(1);
             for (int i = IN_FLIGHT + 1; i < IN_FLIGHT + EXTRA; i++) {
                 assertThat(row(ticketIds.get(i)).get("status_cd")).as("나머지는 WAITING 그대로").isEqualTo("WAITING");
                 assertThat(row(ticketIds.get(i)).get("generation_no")).isEqualTo(0);

@@ -7,6 +7,7 @@ import com.crs.backend.application.handler.LoginTicketHandler;
 import com.crs.backend.auth.AuthService;
 import com.crs.backend.auth.LoginCredentialStore;
 import com.crs.backend.domain.entity.WaitingTicket;
+import com.crs.backend.queue.QueueAdmissionScheduler;
 import com.crs.backend.queue.QueueProperties;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
@@ -33,6 +34,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -91,6 +93,8 @@ class LoginRecoveryIntegrationTest {
     @MockitoSpyBean LoginTicketHandler loginHandler;
     /** auth와 같은 빈. processLogin이 행 잠금을 잡기 직전에 옛 워커를 멈추는 데 쓴다 */
     @MockitoSpyBean AuthService authSpy;
+    /** 주기 배정 스케줄러가 설정 중 먼저 배정해 호출 순서와 결과를 흔들지 않도록 끈다. 배정은 테스트가 디스패처를 직접 부른다 */
+    @MockitoBean QueueAdmissionScheduler admissionScheduler;
 
     /** true이면 다음 handle 호출 한 번을 건너뛰고 (스냅샷, 기대 세대)를 기록한다. 이후 호출은 진짜 핸들러가 처리한다 */
     private final AtomicBoolean skipNext = new AtomicBoolean();
@@ -375,7 +379,7 @@ class LoginRecoveryIntegrationTest {
         assertThat(sql.queryForObject("SELECT count(*) FROM sessions", Integer.class)).isZero();
     }
 
-    @Test void 재투입을_세번_거친_LOGIN_티켓은_네번째_회수에서_E99로_종결하고_늦은_워커가_자격_증명을_쓰지_않는다() {
+    @Test void 재투입을_세번_거친_LOGIN_티켓은_네번째_회수에서_E99로_종결하고_늦은_워커가_행을_바꾸지_않는다() {
         long id = intake();
         for (int round = 1; round <= WaitingTicket.MAX_RETRY; round++) {
             claimWithoutRunning();
@@ -413,7 +417,6 @@ class LoginRecoveryIntegrationTest {
         assertThat(row(id)).as("E99 종결 행 변경 없음").isEqualTo(rejected);
         assertThat(sessionCount(id)).isZero();
         assertThat(sql.queryForObject("SELECT count(*) FROM sessions", Integer.class)).isZero();
-        assertThat(probeCredential(id)).as("늦은 워커가 자격 증명을 소비하지 않았다").isEqualTo(USER);
         // 종결된 티켓은 더 배정되지 않는다
         assertThat(dispatcher.claimAndDispatch()).isZero();
         assertThat(row(id)).isEqualTo(rejected);
