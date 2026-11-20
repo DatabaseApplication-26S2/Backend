@@ -335,7 +335,7 @@ class SafeWaitReturnIntegrationTest {
         assertThat(row(t2).get("status_cd")).isEqualTo("SUCCEEDED");
         assertThat(row(t2).get("result_cd")).isEqualTo("OK");
 
-        // 배치의 3번 호출은 세대가 달라 아무 일도 하지 않았고, 이제 N=1·처리 중 0이므로 다음 claim이 3번을 잡는다
+        // 배치의 3번 호출은 상태가 WAITING이라 아무 일도 하지 않았고, 이제 N=1·처리 중 0이므로 다음 claim이 3번을 잡는다
         dispatcher.claimAndDispatch();
         await("3번 종결", () -> "SUCCEEDED".equals(row(t3).get("status_cd")));
 

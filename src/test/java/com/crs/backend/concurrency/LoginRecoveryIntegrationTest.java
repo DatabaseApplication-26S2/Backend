@@ -204,6 +204,46 @@ class LoginRecoveryIntegrationTest {
         assertThat(sessionCount(id)).isEqualTo(1);
     }
 
+    @Test void 새_세대_워커가_PROCESSING으로_티켓을_쥔_동안_옛_세대_워커의_늦은_호출은_행도_자격_증명도_건드리지_않는다() {
+        long id = intake();
+        claimWithoutRunning();
+        WaitingTicket staleSnapshot = skippedSnapshot.get();
+        int staleGeneration = skippedGeneration.get();
+        assertThat(staleGeneration).isEqualTo(1);
+        expireLease(id);
+        assertThat(reclaimer.reclaimExpired()).isEqualTo(1);
+        assertThat(row(id).get("generation_no")).isEqualTo(2);
+
+        // 새 워커가 세대 3으로 배정받아 PROCESSING을 쥐고 있지만 핸들러는 아직 돌지 않았다
+        claimWithoutRunning();
+        WaitingTicket currentSnapshot = skippedSnapshot.get();
+        int currentGeneration = skippedGeneration.get();
+        assertThat(currentGeneration).isEqualTo(3);
+        Map<String, Object> held = row(id);
+        assertThat(held.get("status_cd")).isEqualTo("PROCESSING");
+        assertThat(held.get("generation_no")).isEqualTo(3);
+        assertThat(held.get("owner_worker_ref")).isNotNull();
+        assertThat(held.get("lease_info")).isNotNull();
+        assertThat(held.get("slot_claim_ref")).isEqualTo(3);
+
+        // 세대 1 워커가 이제 와서 돈다: 세대가 달라 아무것도 바꾸지 않는다
+        loginHandler.handle(staleSnapshot, staleGeneration);
+
+        assertThat(row(id)).as("PROCESSING 행(세대 3, 소유·리스·슬롯) 변경 없음").isEqualTo(held);
+        assertThat(sessionCount(id)).as("세션 없음").isZero();
+
+        // 자격 증명이 소비되지 않았으므로 세대 3 워커가 정상 로그인으로 끝낸다
+        loginHandler.handle(currentSnapshot, currentGeneration);
+
+        Map<String, Object> done = row(id);
+        assertThat(done.get("status_cd")).isEqualTo("SUCCEEDED");
+        assertThat(done.get("result_cd")).isEqualTo("OK");
+        assertThat(done.get("generation_no")).isEqualTo(3);
+        assertFreed(done);
+        assertThat(sessionCount(id)).as("로그인 티켓당 세션은 정확히 1건").isEqualTo(1);
+        assertThat(probeCredential(id)).as("세대 3 워커가 자격 증명을 소비했다").isNull();
+    }
+
     @Test void 재시작으로_메모리_컨텍스트가_사라진_대기_LOGIN_티켓은_E01로_종결하고_세션이_없다() {
         long id = intake();
         credentials.discard(contextOf(id));
