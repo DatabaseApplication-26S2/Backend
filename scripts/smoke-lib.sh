@@ -1,23 +1,25 @@
 #!/usr/bin/env bash
 # =====================================================================
 # smoke 공통 도우미(X-05·X-06). 직접 실행하지 않고 smoke-p1.sh·smoke-all.sh가 source한다.
+# 기본값은 V900 시연 시드(local·demo 프로파일, db/seed/V900__seed_demo.sql)다. 환경 변수 없이 실행한다.
 # 설정은 환경 변수로 바꿀 수 있다: BASE, ORIGIN, PASSWORD, STUDENT, STUDENT2, PROFESSOR, ADMIN,
-#   COURSE_ENROLL, COURSE_ASSIGN, COURSE_CLOSED, COURSE_OTHERS, COURSE_DETAIL
+#   COURSE_ENROLL, COURSE_ASSIGN, COURSE_CLOSED, COURSE_OTHERS, COURSE_OWN, COURSE_DETAIL
 # =====================================================================
 set -u
 
 BASE="${BASE:-http://localhost:8080/api/v1}"
 ORIGIN="${ORIGIN:-http://localhost:5173}"
-PASSWORD="${PASSWORD:-Test-password1!}"
+PASSWORD="${PASSWORD:-Demo-password1!}"      # V900 시드 계정 공통 비밀번호(시연 전용)
 STUDENT="${STUDENT:-20260003}"
 STUDENT2="${STUDENT2:-20260002}"          # 갱신(재사용 탐지) 점검 전용. 이 학생의 세션은 점검 중 폐기된다
-PROFESSOR="${PROFESSOR:-prof01}"
-ADMIN="${ADMIN:-admin01}"
-COURSE_ENROLL="${COURSE_ENROLL:-HIS1002}"   # 학생이 신청·취소할 과목(여석 있음, prof02 담당)
-COURSE_ASSIGN="${COURSE_ASSIGN:-ELE015}"    # 관리자가 배정할 과목(학생이 마지막에 취소)
-COURSE_CLOSED="${COURSE_CLOSED:-MAJ2001}"   # 폐강 과목
-COURSE_OTHERS="${COURSE_OTHERS:-HIS1002}"   # prof01이 담당하지 않는 과목
-COURSE_DETAIL="${COURSE_DETAIL:-CSE3010}"   # X-06: 상세 조회·중복 등록에 쓸 기존 과목
+PROFESSOR="${PROFESSOR:-P1001}"
+ADMIN="${ADMIN:-A1001}"
+COURSE_ENROLL="${COURSE_ENROLL:-DEMO05}"    # 학생이 신청·취소할 과목(정원 30, P1002 담당)
+COURSE_ASSIGN="${COURSE_ASSIGN:-DEMO03}"    # 관리자가 배정할 과목(정원 30, 학생이 마지막에 취소)
+COURSE_CLOSED="${COURSE_CLOSED:-SMKCLOSED}" # 폐강 과목. 없으면 PROFESSOR가 등록·폐강해 준비한다(ensure_closed_course)
+COURSE_OTHERS="${COURSE_OTHERS:-DEMO05}"    # PROFESSOR가 담당하지 않는 과목
+COURSE_OWN="${COURSE_OWN:-DEMO04}"          # PROFESSOR 담당 과목. 현재 값 그대로 다시 저장해 수정을 확인한다
+COURSE_DETAIL="${COURSE_DETAIL:-DEMO01}"    # X-06: 상세 조회·중복 등록에 쓸 기존 과목
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -98,6 +100,25 @@ login() {
   [ -n "$ACCESS" ]
 }
 
+
+# ensure_closed_course 교수_토큰 : COURSE_CLOSED를 PROFESSOR 담당 폐강 과목으로 준비한다(여러 번 실행해도 같은 결과)
+#   없으면 등록(최소 수강인원 1, 인원 0) 뒤 폐강, OPEN이면 폐강, 이미 CLOSED면 그대로 둔다. 시드에 폐강 과목이 없어서 필요하다
+ensure_closed_course() {
+  local auth=(-H "Authorization: Bearer $1")
+  req GET "/courses/$COURSE_CLOSED" "" "${auth[@]}"
+  if [ "$STATUS" = 404 ]; then
+    req POST /professor/courses "{\"courseCode\":\"$COURSE_CLOSED\",\"name\":\"점검용 폐강 과목\",\"category\":\"MAJOR\",\"evaluationType\":\"ABSOLUTE\",\"capacity\":30,\"minimumEnrollment\":1,\"classroom\":\"점검실\"}" "${auth[@]}"
+    req POST "/professor/courses/$COURSE_CLOSED/closure" "" "${auth[@]}"
+  elif [ "$STATUS" = 200 ] && [ "$(json_get status)" = OPEN ]; then
+    req POST "/professor/courses/$COURSE_CLOSED/closure" "" "${auth[@]}"
+  fi
+}
+
+# course_update_body 과목코드 토큰 → $UPD : 과목의 현재 값으로 만든 수정 본문(같은 값 저장이라 데이터가 바뀌지 않는다)
+course_update_body() {
+  req GET "/courses/$1" "" -H "Authorization: Bearer $2"
+  UPD="{\"name\":\"$(json_get name)\",\"category\":\"$(json_get category)\",\"evaluationType\":\"$(json_get evaluationType)\",\"capacity\":$(json_get capacity),\"minimumEnrollment\":$(json_get minimumEnrollment),\"classroom\":\"$(json_get classroom)\"}"
+}
 
 # 서버 연결 확인
 require_server() {

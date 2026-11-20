@@ -13,7 +13,7 @@
 |---|---|
 | 백엔드 | `docker compose up -d db redis` → `.\gradlew.bat bootRun`(local) |
 | 프런트엔드 | `pnpm dev` → http://localhost:5173 (`VITE_USE_MOCK=false`, Vite 프록시 `/api` → 8080) |
-| 테스트 데이터 | 계정 학생 `20260001`~`20260003`, 교수 `prof01`·`prof02`, 관리자 `admin01`(비밀번호 공통), 과목 23개 |
+| 테스트 데이터 | 11/20부터 V900 시연 시드(local·demo 프로파일이 자동 적용): 학생 `20260001`~`20260060`, 교수 `P1001`~`P1003`, 관리자 `A1001`(비밀번호 공통), 과목 `DEMO01`~`DEMO25`. 11/18 실행 기록은 당시 로컬 테스트 데이터(`prof01`·`admin01`) 기준 |
 | 자동 점검 | Git Bash에서 `bash scripts/smoke-p1.sh` |
 
 ## 2. 연산별 점검(smoke-p1.sh)
@@ -21,6 +21,8 @@
 결과 열은 실행할 때마다 채운다. ✅ 통과 · ❌ 실패 · ⚠️ 계약과 다름(담당자 확인 필요)
 
 **실행 기록:** 2026-11-18 11:33, `feature/sub-course-admin`, local 프로파일 — **27/27 통과(exit 0)**
+
+**실행 기록(#9 기본값 변경 후):** 2026-11-20 20:27, `feature/sub-course-admin-m5`, local 프로파일·V900 시드(새 DB), 환경 변수·보조 SQL 없이 — **27/27 통과(exit 0), 연속 2회**
 
 | # | 연산 | 담당 | 성공 확인 | 대표 오류 확인 | 결과 |
 |---|---|---|---|---|---|
@@ -91,6 +93,9 @@ PASSWORD='Demo-password1!' STUDENT=20260003 PROFESSOR=P1001 ADMIN=A1001 \
 COURSE_ENROLL=DEMO02 COURSE_ASSIGN=DEMO03 COURSE_CLOSED=SMKCLOSED COURSE_OTHERS=DEMO02 \
 bash scripts/smoke-p1.sh
 ```
+
+> 11/20(#9)부터 smoke 기본값이 V900 시드다. 위 환경 변수와 `smoke-auth-demo.sql` 없이 `bash scripts/smoke-p1.sh`만 실행한다.
+> 폐강 과목 `SMKCLOSED`는 처음 실행할 때 스크립트가 교수 `P1001`로 등록·폐강해 준비하고, 교수 수정 [11]은 `DEMO04`를 현재 값 그대로 다시 저장한다.
 
 이 기록은 직접 HTTP smoke 실행 결과다. Vite 프록시 및 실제 브라우저 쿠키 저장/전송,
 위 S1~S3, 공용 TicketIntake/TicketHandler 최종 연동의 완료를 의미하지 않는다.
