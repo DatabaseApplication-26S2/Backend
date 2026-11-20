@@ -11,6 +11,9 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import com.crs.backend.application.TicketDispatcher;
+import com.crs.backend.application.handler.EnrollmentTicketHandler;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
@@ -33,6 +36,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -40,6 +44,10 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 
 /**
  * BE-17 티켓 회수·리스 연장 통합 테스트(구현계획 4절 (6)~(9), 7절 T8). 실제 PostgreSQL 위에서 돈다.
@@ -84,6 +92,9 @@ class TicketRecoveryIntegrationTest {
     @Autowired TransactionTemplate tx;
     @Autowired RedissonClient redisson;
     @Autowired QueueProperties queueProperties;
+    @Autowired TicketDispatcher dispatcher;
+    /** 같은 빈에 스파이를 씌운다. 테스트가 끝나면 스텁과 호출 기록은 자동으로 초기화된다 */
+    @MockitoSpyBean EnrollmentTicketHandler enrollmentHandler;
 
     private String course;
     private int userSeq;
@@ -171,6 +182,18 @@ class TicketRecoveryIntegrationTest {
         }
     }
 
+    /** 접수 직후 대기 중(WAITING)인 학생 신청 티켓 1건과 그 사용자·세션을 만든다. 디스패처가 실제로 배정하는 대상이다 */
+    private long waiting() {
+        String user = "recov" + (userSeq++);
+        sql.update("INSERT INTO users VALUES (?, 'hash', ?, 'STUDENT')", user, user);
+        String session = TestFixtures.session(jdbc, user, "STUDENT");
+        return TestFixtures.waitingEnrollmentTicket(jdbc, user, session, course, CODE);
+    }
+
+    private int activeCnt() {
+        return sql.queryForObject("SELECT active_cnt FROM courses WHERE course_inst_id=CAST(? AS uuid)", Integer.class, course);
+    }
+
     private boolean leaseBeyond(long ticketId, int seconds) {
         return sql.queryForObject("SELECT lease_info > clock_timestamp() + (? * interval '1 second') FROM tickets WHERE ticket_id=?",
             Boolean.class, seconds, ticketId);
@@ -237,15 +260,31 @@ class TicketRecoveryIntegrationTest {
         assertThat(after.get("retry_count")).isEqualTo(WaitingTicket.MAX_RETRY);
     }
 
-    @Test void t8_회수된_뒤_옛_세대의_늦은_종결은_0행이고_슬롯은_한_번만_반납된다() {
+    @Test void t8_회수된_뒤_옛_세대의_늦은_핸들러_호출은_업무_데이터를_바꾸지_않고_슬롯은_한_번만_반납된다() {
         long stale = processing(1, 0, WaitingTicket.WORKER_REF, "-5 seconds");
         long other = processing(1, 0, WaitingTicket.WORKER_REF, "30 seconds");
         assertThat(processingCount()).isEqualTo(2);
+        // 디스패처가 회수 전에 읽어 둔 스냅샷(세대 1)을 느린 워커가 계속 들고 있는 상황
+        WaitingTicket snapshot = tickets.findById(stale).orElseThrow();
+        int activeBefore = activeCnt();
 
         assertThat(reclaimer.reclaimExpired()).isEqualTo(1);
         assertThat(processingCount()).as("회수로 슬롯 1회 반납").isEqualTo(1);
+        Map<String, Object> reclaimed = row(stale);
 
-        // 영속 엔티티로 늦은 종결: 세대 조건부 종결은 거부되고 변경이 없다
+        // 진짜 핸들러로 늦은 종결: 세대가 달라 아무 일도 하지 않는다
+        enrollmentHandler.handle(snapshot, 1);
+
+        assertThat(row(stale)).as("티켓 행 변경 없음").isEqualTo(reclaimed);
+        assertThat(reclaimed.get("status_cd")).isEqualTo("WAITING");
+        assertThat(reclaimed.get("generation_no")).isEqualTo(2);
+        assertThat(reclaimed.get("result_cd")).isNull();
+        assertThat(sql.queryForObject("SELECT count(*) FROM enrollments", Integer.class)).as("신청 내역 없음").isZero();
+        assertThat(activeCnt()).as("active_cnt 그대로").isEqualTo(activeBefore);
+        assertThat(processingCount()).as("늦은 종결이 슬롯을 두 번 돌려주지 않는다").isEqualTo(1);
+        assertThat(row(other).get("status_cd")).isEqualTo("PROCESSING");
+
+        // 영속 엔티티의 세대 조건부 종결도 거부된다
         Boolean finished = tx.execute(status -> {
             WaitingTicket entity = tickets.findById(stale).orElseThrow();
             boolean ok = entity.succeedIfGeneration(1, Instant.now());
@@ -253,18 +292,73 @@ class TicketRecoveryIntegrationTest {
             return ok;
         });
         assertThat(finished).isFalse();
-        // 같은 의미의 세대 조건부 UPDATE도 0행이다
-        assertThat(sql.update("""
-            UPDATE tickets SET status_cd='SUCCEEDED', result_cd='OK', processing_finished_at=clock_timestamp(),
-                owner_worker_ref=NULL, lease_info=NULL, slot_claim_ref=NULL
-            WHERE ticket_id=? AND generation_no=? AND status_cd='PROCESSING'""", stale, 1)).isZero();
+        assertThat(row(stale)).isEqualTo(reclaimed);
+    }
 
-        Map<String, Object> after = row(stale);
-        assertThat(after.get("status_cd")).isEqualTo("WAITING");
-        assertThat(after.get("generation_no")).isEqualTo(2);
-        assertThat(after.get("result_cd")).isNull();
-        assertThat(processingCount()).as("늦은 종결이 슬롯을 두 번 돌려주지 않는다").isEqualTo(1);
-        assertThat(row(other).get("status_cd")).isEqualTo("PROCESSING");
+    @Test void 디스패처는_첫_핸들러_전에_배치_전체를_추적해_뒤쪽_티켓의_리스도_연장한다() {
+        long first = waiting();
+        long second = waiting();
+        AtomicInteger renewedDuringFirst = new AtomicInteger(-1);
+        AtomicInteger calls = new AtomicInteger();
+        doAnswer(invocation -> {
+            if (calls.getAndIncrement() == 0) {
+                // 첫 핸들러가 도는 중: 두 티켓의 리스를 만료 직전으로 당긴 뒤 연장 작업을 돌린다
+                sql.update("UPDATE tickets SET lease_info=clock_timestamp() + interval '2 seconds' WHERE status_cd='PROCESSING'");
+                renewedDuringFirst.set(renewer.renewLeases());
+            }
+            return null;
+        }).when(enrollmentHandler).handle(any(), anyInt());
+
+        assertThat(dispatcher.claimAndDispatch()).isEqualTo(2);
+
+        assertThat(calls.get()).isEqualTo(2);
+        assertThat(renewedDuringFirst.get()).as("아직 처리 전인 두 번째 티켓까지 추적 중").isEqualTo(2);
+        assertThat(leaseBeyond(second, 25)).as("두 번째 티켓의 리스가 연장됨").isTrue();
+        assertThat(leaseBeyond(first, 25)).isTrue();
+    }
+
+    @Test void 핸들러가_실패하면_PROCESSING으로_남고_추적은_내려간다() {
+        long id = waiting();
+        doThrow(new IllegalStateException("워커 강제 중단")).when(enrollmentHandler).handle(any(), anyInt());
+
+        assertThat(dispatcher.claimAndDispatch()).isEqualTo(1);
+
+        Map<String, Object> after = row(id);
+        assertThat(after.get("status_cd")).isEqualTo("PROCESSING");
+        assertThat(after.get("generation_no")).isEqualTo(1);
+        assertThat(sql.update("UPDATE tickets SET lease_info=clock_timestamp() + interval '2 seconds' WHERE ticket_id=?", id)).isEqualTo(1);
+        assertThat(renewer.renewLeases()).as("실패 뒤에는 추적하는 작업이 없다").isZero();
+        assertThat(leaseBeyond(id, 5)).isFalse();
+    }
+
+    @Test void t8_워커_실패_뒤_회수되고_다시_디스패치되면_같은_번호로_한_번만_성공한다() {
+        long id = waiting();
+        doThrow(new IllegalStateException("워커 강제 중단")).doCallRealMethod()
+            .when(enrollmentHandler).handle(any(), anyInt());
+
+        assertThat(dispatcher.claimAndDispatch()).isEqualTo(1);
+        assertThat(row(id).get("status_cd")).isEqualTo("PROCESSING");
+        assertThat(sql.update("UPDATE tickets SET lease_info=clock_timestamp() - interval '5 seconds' WHERE ticket_id=?", id)).isEqualTo(1);
+
+        assertThat(reclaimer.reclaimExpired()).isEqualTo(1);
+        Map<String, Object> waiting = row(id);
+        assertThat(waiting.get("status_cd")).isEqualTo("WAITING");
+        assertThat(waiting.get("retry_count")).isEqualTo(1);
+        assertThat(waiting.get("generation_no")).isEqualTo(2);
+
+        assertThat(dispatcher.claimAndDispatch()).isEqualTo(1);
+
+        Map<String, Object> done = row(id);
+        assertThat(done.get("status_cd")).isEqualTo("SUCCEEDED");
+        assertThat(done.get("result_cd")).isEqualTo("OK");
+        assertThat(done.get("retry_count")).isEqualTo(1);
+        assertThat(done.get("generation_no")).isEqualTo(3);
+        assertThat(done.get("owner_worker_ref")).isNull();
+        assertThat(sql.queryForObject("SELECT count(*) FROM tickets WHERE request_type='ENROLLMENT'", Integer.class)).isEqualTo(1);
+        assertThat(sql.queryForObject("SELECT count(*) FROM enrollments WHERE source_ticket_id=? AND enroll_status='ENROLLED'",
+            Integer.class, id)).as("신청 내역은 정확히 1건").isEqualTo(1);
+        assertThat(sql.queryForObject("SELECT count(*) FROM enrollments", Integer.class)).isEqualTo(1);
+        assertThat(activeCnt()).as("INV-2: active_cnt = ENROLLED 건수").isEqualTo(1);
     }
 
     @Test void t8_리스가_남은_처리중_티켓은_회수하지_않는다() {
