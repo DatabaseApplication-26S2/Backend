@@ -131,7 +131,7 @@ public class WaitingTicket {
         this.proofExpiresAt = proofExpiresAt;
         this.targetCourseInstId = targetCourseInstId;
         this.courseCodeSnapshot = courseCodeSnapshot;
-        this.ticketIssuedAt = ticketIssuedAt != null ? ticketIssuedAt : Instant.now();
+        this.ticketIssuedAt = ticketIssuedAt;
         this.status = status != null ? status : TicketStatus.RECEIVED;
         this.processingStartedAt = processingStartedAt;
         this.processingFinishedAt = processingFinishedAt;
@@ -143,23 +143,17 @@ public class WaitingTicket {
         this.slotClaimRef = slotClaimRef;
     }
 
-    public static WaitingTicket admission(String requesterUserId, String sessionRef) {
-        return WaitingTicket.builder()
-                .requestType(TicketRequestType.ADMISSION)
-                .requesterUserId(requesterUserId)
-                .sessionRef(sessionRef)
-                .ticketIssuedAt(Instant.now())
-                .status(TicketStatus.RECEIVED)
-                .retryCount(0)
-                .generationNo(0)
-                .build();
-    }
-
+    /**
+     * 접수 시각 {@code issuedAt}은 JVM 시계가 아니라, 접수 트랜잭션이 접수 잠금을 얻은 뒤 DB 시계 {@code clock_timestamp()}로
+     * 읽은 값이다(구현계획 4절 (1)). 처리 시작·종결 시각과 같은 시계를 쓴다. 취소 팩터리도 같다.
+     * 입장 티켓은 AuthService.requestAdmission이 같은 접수 잠금 아래에서 직접 INSERT한다.
+     */
     public static WaitingTicket enrollment(
             String requesterUserId,
             String sessionRef,
             String courseInstId,
-            String courseCode
+            String courseCode,
+            Instant issuedAt
     ) {
         return WaitingTicket.builder()
                 .requestType(TicketRequestType.ENROLLMENT)
@@ -167,7 +161,7 @@ public class WaitingTicket {
                 .sessionRef(sessionRef)
                 .targetCourseInstId(courseInstId)
                 .courseCodeSnapshot(courseCode)
-                .ticketIssuedAt(Instant.now())
+                .ticketIssuedAt(issuedAt)
                 .status(TicketStatus.RECEIVED)
                 .retryCount(0)
                 .generationNo(0)
@@ -178,7 +172,8 @@ public class WaitingTicket {
             String requesterUserId,
             String sessionRef,
             String courseInstId,
-            String courseCode
+            String courseCode,
+            Instant issuedAt
     ) {
         return WaitingTicket.builder()
                 .requestType(TicketRequestType.CANCELLATION)
@@ -186,7 +181,7 @@ public class WaitingTicket {
                 .sessionRef(sessionRef)
                 .targetCourseInstId(courseInstId)
                 .courseCodeSnapshot(courseCode)
-                .ticketIssuedAt(Instant.now())
+                .ticketIssuedAt(issuedAt)
                 .status(TicketStatus.RECEIVED)
                 .retryCount(0)
                 .generationNo(0)
@@ -200,35 +195,48 @@ public class WaitingTicket {
     /** 이 프로세스(인스턴스)의 처리기 식별자. 기동할 때 한 번 만든다(구현계획 4절 (6)) */
     public static final String WORKER_REF = "worker-" + java.util.UUID.randomUUID();
 
-    /** 처리 리스(구현계획 D-07 제안값 30초) */
+    /** 처리 리스(구현계획 4절 (8), D-07 확정값 30초) */
     public static final java.time.Duration LEASE = java.time.Duration.ofSeconds(30);
 
     /**
-     * PROCESSING 전환. tickets CHECK 3(PROCESSING일 때만 소유·리스·슬롯이 있고 슬롯 = 세대)을 지킨다.
+     * 재투입 한도(구현계획 4절 (8), D-07 확정값 3회). 회수할 때 retry_count가 이 값보다 작으면 WAITING으로 돌리며 1을 더하고,
+     * 이 값에 닿았으면 REJECTED/E99로 종결한다. 그래서 네 번째 회수가 E99다(구현계획 7절 T8).
      */
-    public void markProcessing() {
-        Instant now = Instant.now();
+    public static final int MAX_RETRY = 3;
+
+    /**
+     * PROCESSING 전환. tickets CHECK 3(PROCESSING일 때만 소유·리스·슬롯이 있고 슬롯 = 세대)을 지킨다.
+     * 시각은 JVM 시계가 아니다. 디스패처가 회계 잠금(service_settings 행)을 얻은 뒤 DB 시계
+     * {@code clock_timestamp()}에서 한 번 읽은 배정 기준 시각 {@code claimedAt}이다(구현계획 4절 (3) {@code :claimed_at}).
+     * 처리 시작 시각 = claimedAt, 리스 = claimedAt + {@link #LEASE}이므로 둘의 차이는 리스와 같다.
+     */
+    public void markProcessing(Instant claimedAt) {
         this.status = TicketStatus.PROCESSING;
-        this.processingStartedAt = now;
+        this.processingStartedAt = claimedAt;
         this.generationNo = this.generationNo + 1;
         this.slotClaimRef = this.generationNo;
         this.ownerWorkerRef = WORKER_REF;
-        this.leaseInfo = now.plus(LEASE);
+        this.leaseInfo = claimedAt.plus(LEASE);
     }
 
-    public boolean succeedIfGeneration(int expectedGeneration) {
+    /**
+     * 세대 조건부 성공 종결. 종결 시각 {@code finishedAt}은 JVM 시계가 아니라, 워커가 판정 뒤 같은 트랜잭션에서
+     * DB 시계 {@code clock_timestamp()}로 읽은 값이다(구현계획 4절 (5) 종결 UPDATE). 처리 시작 시각과 같은 시계를 쓴다.
+     */
+    public boolean succeedIfGeneration(int expectedGeneration, Instant finishedAt) {
         if (status != TicketStatus.PROCESSING || generationNo != expectedGeneration) {
             return false;
         }
-        succeed();
+        succeed(finishedAt);
         return true;
     }
 
-    public boolean rejectIfGeneration(int expectedGeneration, TicketResultCode code) {
+    /** 세대 조건부 거절 종결. 종결 시각은 {@link #succeedIfGeneration}과 같이 DB 시계에서 읽은 값이다 */
+    public boolean rejectIfGeneration(int expectedGeneration, TicketResultCode code, Instant finishedAt) {
         if (status != TicketStatus.PROCESSING || generationNo != expectedGeneration) {
             return false;
         }
-        reject(code);
+        reject(code, finishedAt);
         return true;
     }
 
@@ -238,17 +246,17 @@ public class WaitingTicket {
         releaseSlot();
     }
 
-    public void succeed() {
+    public void succeed(Instant finishedAt) {
         this.status = TicketStatus.SUCCEEDED;
         this.resultCode = TicketResultCode.OK;
-        this.processingFinishedAt = Instant.now();
+        this.processingFinishedAt = finishedAt;
         releaseSlot();
     }
 
-    public void reject(TicketResultCode code) {
+    public void reject(TicketResultCode code, Instant finishedAt) {
         this.status = TicketStatus.REJECTED;
         this.resultCode = code;
-        this.processingFinishedAt = Instant.now();
+        this.processingFinishedAt = finishedAt;
         releaseSlot();
     }
 
