@@ -11,7 +11,7 @@
 #
 # 데이터: [14]·[17]은 실행할 때마다 새 과목(RG·RH로 시작)을 등록하고 바로 폐강한다.
 #         폐강 과목은 보존되므로 실행할수록 폐강된 테스트 과목이 쌓인다. 초기화는 DB 재생성으로 한다.
-#         [18]은 STUDENT2의 세션을 재사용 탐지로 폐기한다. [20]은 현재 N을 같은 값으로 다시 저장한다.
+#         [18]은 STUDENT2의 세션을 재사용 탐지로 폐기한다. [20]은 N을 1 바꿨다가 원래 값으로 되돌린다.
 # =====================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=smoke-p1.sh
@@ -90,9 +90,13 @@ run_p23() {
   # ===================== 20. PUT /admin/settings =====================
   echo "[20] 서비스 설정 변경 PUT /admin/settings"
   if [ -n "$N" ]; then
-    req PUT /admin/settings "{\"concurrencyLimit\":$N}" "${AA[@]}"   # 같은 값으로 다시 저장
-    check "200, 변경자 기록(lastChangedBy)" \
-      eval '[ "$STATUS" = 200 ] && [ "$(json_get lastChangedBy)" = "$ADMIN" ]'
+    # 같은 값은 변경자를 기록하지 않으므로(계약) 1만큼 바꿔 확인하고 곧바로 원래 N으로 되돌린다
+    local N2; if [ "$N" -ge 1000 ]; then N2=$((N - 1)); else N2=$((N + 1)); fi
+    req PUT /admin/settings "{\"concurrencyLimit\":$N2}" "${AA[@]}"
+    check "200, 새 N과 변경자 기록(lastChangedBy)" \
+      eval '[ "$STATUS" = 200 ] && [ "$(json_get concurrencyLimit)" = "$N2" ] && [ "$(json_get lastChangedBy)" = "$ADMIN" ]'
+    req PUT /admin/settings "{\"concurrencyLimit\":$N}" "${AA[@]}"   # 원래 값으로 복구
+    check "원래 N으로 복구" eval '[ "$STATUS" = 200 ] && [ "$(json_get concurrencyLimit)" = "$N" ]'
   else
     # [19]에서 현재 N을 읽지 못했으면 저장하지 않는다. 다른 값을 쓰면 시연 환경의 N이 바뀐다.
     STATUS="-"
