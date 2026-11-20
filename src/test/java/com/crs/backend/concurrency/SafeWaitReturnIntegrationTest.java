@@ -285,29 +285,26 @@ class SafeWaitReturnIntegrationTest {
         sql.update("UPDATE service_settings SET concurrency_limit=3");
         long t1 = waiting(courseY, CODE_Y);
         long t2 = waiting(courseX, CODE_X);
-        long t3 = waiting(courseX, CODE_X);
+        long[] third = new long[1];
         ExecutorService batchPool = pool();
         ExecutorService workerPool = pool();
 
         try (Connection holder = dataSource.getConnection()) {
             int holderPid = lockCourse(holder, courseX);
-            // 디스패처는 배치를 한 스레드에서 차례로 돌린다. 1번은 끝나고 2번은 과목 X 잠금에서 멈춘다
+            // 디스패처는 배치를 한 스레드에서 차례로 돌린다. 1번은 끝나고 2번은 과목 X 잠금에서 멈춘다.
+            // 같은 배치에 3번이 있으면 2번이 끝난 뒤에야 3번 핸들러가 돌아 "2번이 미완료인 채 3번 워커가 실행되는" 상황이 안 생긴다.
+            // 그래서 3번은 첫 claim 뒤에 접수하고, 별도의 claimAndDispatch() 호출(스케줄러·DispatchKick과 겹치는 상황)이 맡게 한다
             Future<Integer> batch = batchPool.submit(dispatcher::claimAndDispatch);
             try {
-
                 await("2번 워커가 과목 X 잠금에서 대기", () -> blockedBy(holderPid) == 1);
                 assertThat(row(t1).get("status_cd")).as("1번(Y)은 먼저 종결").isEqualTo("SUCCEEDED");
                 assertThat(row(t2).get("status_cd")).as("2번은 진행 중").isEqualTo("PROCESSING");
-                assertThat(row(t3).get("status_cd")).isEqualTo("PROCESSING");
-                int gen3 = (int) row(t3).get("generation_no");
-                assertThat(gen3).isEqualTo(1);
-                WaitingTicket snapshot3 = tickets.findById(t3).orElseThrow();
+                long t3 = third[0] = waiting(courseX, CODE_X);
 
-                // 3번 워커를 별도 스레드에서 돌린다. 2번이 미완료이므로 과목 잠금(X는 남이 쥠)에 닿지 않고 바로 복귀한다
-                within(workerPool, () -> {
-                    enrollmentHandler.handle(snapshot3, gen3);
-                    return null;
-                });
+                // 두 번째 디스패치가 3번을 claim하고 실제 핸들러 호출로 처리한다. 2번이 미완료이므로 과목 잠금(X는 남이 쥠)에 닿지 않고 복귀한다
+                int claimedSecond = within(workerPool, dispatcher::claimAndDispatch);
+                assertThat(claimedSecond).as("두 번째 디스패치는 3번만 claim").isEqualTo(1);
+                int gen3 = 1;
 
                 Map<String, Object> returned = row(t3);
                 assertThat(returned.get("status_cd")).isEqualTo("WAITING");
@@ -329,13 +326,15 @@ class SafeWaitReturnIntegrationTest {
             } finally {
                 holder.rollback(); // 과목 X 잠금 해제: 2번이 이어서 끝난다
             }
-            assertThat(batch.get(WAIT_SECONDS * 3, TimeUnit.SECONDS)).as("한 배치로 3건 claim").isEqualTo(3);
+            assertThat(batch.get(WAIT_SECONDS * 3, TimeUnit.SECONDS)).as("첫 배치는 1번·2번만 claim").isEqualTo(2);
         }
+        long t3 = third[0];
 
         assertThat(row(t2).get("status_cd")).isEqualTo("SUCCEEDED");
         assertThat(row(t2).get("result_cd")).isEqualTo("OK");
 
-        // 배치의 3번 호출은 상태가 WAITING이라 아무 일도 하지 않았고, 이제 N=1·처리 중 0이므로 다음 claim이 3번을 잡는다
+        // 두 번째 디스패치에서 3번은 WAITING으로 복귀했다. 이제 N=1·처리 중 0이므로 다음 claim이 3번을 다시 잡는다.
+        // N 변경 뒤 DispatchKick이 먼저 잡았을 수 있어 반환값은 단정하지 않고 종결만 기다린다
         dispatcher.claimAndDispatch();
         await("3번 종결", () -> "SUCCEEDED".equals(row(t3).get("status_cd")));
 

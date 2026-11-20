@@ -9,6 +9,11 @@ import com.crs.backend.auth.LoginCredentialStore;
 import com.crs.backend.domain.entity.WaitingTicket;
 import com.crs.backend.queue.QueueProperties;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -84,6 +89,8 @@ class LoginRecoveryIntegrationTest {
     @Autowired QueueProperties queueProperties;
     /** 같은 빈에 스파이를 씌운다. 테스트가 끝나면 스텁과 호출 기록은 자동으로 초기화된다 */
     @MockitoSpyBean LoginTicketHandler loginHandler;
+    /** auth와 같은 빈. processLogin이 행 잠금을 잡기 직전에 옛 워커를 멈추는 데 쓴다 */
+    @MockitoSpyBean AuthService authSpy;
 
     /** true이면 다음 handle 호출 한 번을 건너뛰고 (스냅샷, 기대 세대)를 기록한다. 이후 호출은 진짜 핸들러가 처리한다 */
     private final AtomicBoolean skipNext = new AtomicBoolean();
@@ -242,6 +249,67 @@ class LoginRecoveryIntegrationTest {
         assertFreed(done);
         assertThat(sessionCount(id)).as("로그인 티켓당 세션은 정확히 1건").isEqualTo(1);
         assertThat(probeCredential(id)).as("세대 3 워커가 자격 증명을 소비했다").isNull();
+    }
+
+    @Test void 옛_워커가_세대_확인을_통과한_뒤_잠금_전에_멈춘_사이_회수와_재배정이_되면_잠금_뒤_재확인으로_아무것도_바꾸지_않는다() throws Exception {
+        long id = intake();
+        claimWithoutRunning();
+        WaitingTicket staleSnapshot = skippedSnapshot.get();
+        int staleGeneration = skippedGeneration.get();
+        assertThat(staleGeneration).isEqualTo(1);
+
+        CountDownLatch reached = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicBoolean pauseNext = new AtomicBoolean(true);
+        doAnswer(invocation -> {
+            if (pauseNext.compareAndSet(true, false)) {
+                reached.countDown();
+                // 핸들러의 세대 확인은 통과했고 행 잠금은 아직 잡지 않은 지점
+                assertThat(release.await(30, TimeUnit.SECONDS)).as("멈춘 워커가 제한 시간 안에 풀려난다").isTrue();
+            }
+            return invocation.callRealMethod();
+        }).when(authSpy).processLogin(any());
+
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            Future<?> stale = pool.submit(() -> loginHandler.handle(staleSnapshot, staleGeneration));
+            assertThat(reached.await(10, TimeUnit.SECONDS)).as("옛 워커가 processLogin 진입 직전에 멈췄다").isTrue();
+            assertThat(row(id).get("generation_no")).as("멈춘 동안 행 잠금을 쥐지 않아 회수가 막히지 않는다").isEqualTo(1);
+
+            expireLease(id);
+            assertThat(reclaimer.reclaimExpired()).isEqualTo(1);
+            assertThat(row(id).get("generation_no")).isEqualTo(2);
+            claimWithoutRunning();
+            WaitingTicket currentSnapshot = skippedSnapshot.get();
+            int currentGeneration = skippedGeneration.get();
+            assertThat(currentGeneration).isEqualTo(3);
+            Map<String, Object> held = row(id);
+            assertThat(held.get("status_cd")).isEqualTo("PROCESSING");
+            assertThat(held.get("owner_worker_ref")).isNotNull();
+            assertThat(held.get("slot_claim_ref")).isEqualTo(3);
+
+            // 옛 워커 재개: 잠금 뒤 상태·세대·소유자 재확인에서 걸러져야 한다
+            release.countDown();
+            stale.get(30, TimeUnit.SECONDS);
+
+            assertThat(row(id)).as("PROCESSING 행(세대 3) 변경 없음").isEqualTo(held);
+            assertThat(sessionCount(id)).as("세션 없음").isZero();
+
+            // 자격 증명이 소비되지 않았으므로 세대 3 워커가 정상 로그인으로 끝낸다
+            loginHandler.handle(currentSnapshot, currentGeneration);
+
+            Map<String, Object> done = row(id);
+            assertThat(done.get("status_cd")).isEqualTo("SUCCEEDED");
+            assertThat(done.get("result_cd")).isEqualTo("OK");
+            assertThat(done.get("generation_no")).isEqualTo(3);
+            assertFreed(done);
+            assertThat(sessionCount(id)).as("로그인 티켓당 세션은 정확히 1건").isEqualTo(1);
+            assertThat(probeCredential(id)).as("세대 3 워커가 자격 증명을 소비했다").isNull();
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+            assertThat(pool.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
+        }
     }
 
     @Test void 재시작으로_메모리_컨텍스트가_사라진_대기_LOGIN_티켓은_E01로_종결하고_세션이_없다() {

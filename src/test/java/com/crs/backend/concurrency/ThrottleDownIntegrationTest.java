@@ -15,6 +15,7 @@ import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import javax.sql.DataSource;
@@ -38,7 +39,9 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.doAnswer;
 
 /**
  * BE-17 하향 조정 통합 테스트(구현계획 4절 (3), 7절 T7: 처리 중 N 5→1).
@@ -87,7 +90,7 @@ class ThrottleDownIntegrationTest {
     @Autowired JdbcTemplate sql;
     @Autowired JdbcClient jdbc;
     @Autowired DataSource dataSource;
-    @Autowired TicketDispatcher dispatcher;
+    @MockitoSpyBean TicketDispatcher dispatcher;
     @Autowired ServiceSettingsService settings;
     @Autowired RedissonClient redisson;
     @Autowired QueueProperties queueProperties;
@@ -95,7 +98,25 @@ class ThrottleDownIntegrationTest {
     private final List<String> courses = new ArrayList<>();
     private final List<Long> ticketIds = new ArrayList<>();
 
+    private static final String KICK_THREAD = "settings-dispatch-kick";
+    /** claimAndDispatch 호출이 끝날 때마다 {호출 스레드 이름, 반환값}을 쌓는다 */
+    private final List<Object[]> claimCalls = new CopyOnWriteArrayList<>();
+
+    private List<Integer> kickResults() {
+        List<Integer> results = new ArrayList<>();
+        for (Object[] call : claimCalls) {
+            if (KICK_THREAD.equals(call[0])) results.add((Integer) call[1]);
+        }
+        return results;
+    }
+
     @BeforeEach void setup() {
+        claimCalls.clear();
+        doAnswer(invocation -> {
+            Object result = invocation.callRealMethod();
+            claimCalls.add(new Object[] {Thread.currentThread().getName(), result});
+            return result;
+        }).when(dispatcher).claimAndDispatch();
         sql.execute("TRUNCATE enrollments, refresh_tokens, sessions, tickets, courses, users CASCADE");
         sql.update("""
             INSERT INTO service_settings(singleton, concurrency_limit, last_changed_by, last_changed_at)
@@ -258,7 +279,10 @@ class ThrottleDownIntegrationTest {
             // 진행 중에 N을 1로 낮춘다(설정 변경은 회계 잠금만 쥐므로 막힌 핸들러와 무관하게 끝난다)
             assertThat(settings.update(ADMIN_USER, new ServiceSettingsUpdateRequest(1)).concurrencyLimit()).isEqualTo(1);
             assertThat(limit()).isEqualTo(1);
-            // 커밋 뒤 깨우기 스레드가 claim을 시도해도 A=5 ≥ N=1이라 N′=0이다
+            // 커밋 뒤 깨우기 스레드(settings-dispatch-kick)의 claim이 실제로 끝날 때까지 기다리고, 0을 돌려줬는지 확인한다.
+            // 그래야 이후 잠금 해제와 겹쳐 뒤늦게 claim이 도는 일이 없다
+            awaitUntil("깨우기 스레드의 claim 호출 완료", () -> kickResults().size() >= 1, flight);
+            assertThat(kickResults()).as("깨우기 claim은 A=5 ≥ N=1이라 0건").containsOnly(0);
             observeStable(IN_FLIGHT, "하향 직후(깨우기 후)");
             assertClaimNothing(pool, "하향 직후 명시 claim");
             assertExtrasUntouched(IN_FLIGHT, "하향 직후 명시 claim 뒤");
