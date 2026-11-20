@@ -206,8 +206,14 @@ public class WaitingTicket {
     /** 이 프로세스(인스턴스)의 처리기 식별자. 기동할 때 한 번 만든다(구현계획 4절 (6)) */
     public static final String WORKER_REF = "worker-" + java.util.UUID.randomUUID();
 
-    /** 처리 리스(구현계획 D-07 제안값 30초) */
+    /** 처리 리스(구현계획 4절 (8), D-07 확정값 30초) */
     public static final java.time.Duration LEASE = java.time.Duration.ofSeconds(30);
+
+    /**
+     * 재투입 한도(구현계획 4절 (8), D-07 확정값 3회). 회수할 때 retry_count가 이 값보다 작으면 WAITING으로 돌리며 1을 더하고,
+     * 이 값에 닿았으면 REJECTED/E99로 종결한다. 그래서 네 번째 회수가 E99다(구현계획 7절 T8).
+     */
+    public static final int MAX_RETRY = 3;
 
     /**
      * PROCESSING 전환. tickets CHECK 3(PROCESSING일 때만 소유·리스·슬롯이 있고 슬롯 = 세대)을 지킨다.
