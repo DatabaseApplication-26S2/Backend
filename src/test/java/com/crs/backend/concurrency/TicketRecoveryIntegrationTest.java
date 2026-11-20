@@ -187,6 +187,7 @@ class TicketRecoveryIntegrationTest {
         String user = "recov" + (userSeq++);
         sql.update("INSERT INTO users VALUES (?, 'hash', ?, 'STUDENT')", user, user);
         String session = TestFixtures.session(jdbc, user, "STUDENT");
+        sql.update("UPDATE sessions SET entered_at=clock_timestamp() WHERE session_id=CAST(? AS uuid)", session);
         return TestFixtures.waitingEnrollmentTicket(jdbc, user, session, course, CODE);
     }
 
