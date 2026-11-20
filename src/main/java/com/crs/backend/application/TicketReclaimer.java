@@ -109,15 +109,31 @@ public class TicketReclaimer {
         return reclaim("lease-expired", SELECT_EXPIRED);
     }
 
-    /** 기동 시 재조정(구현계획 4절 (8) 1). 다른 인스턴스 소유의 PROCESSING 티켓을 리스와 무관하게 회수하고 행 수를 돌려준다 */
+    /**
+     * 기동 시 재조정(구현계획 4절 (8) 1). 다른 인스턴스 소유의 PROCESSING 티켓을 리스와 무관하게 회수하고 행 수를 돌려준다.
+     * DB 오류나 service_settings 행 누락은 그대로 던진다. 기동을 막지 않는 처리는 {@link #reclaimOrphansOnStartup}이 맡는다.
+     */
     public int reclaimOrphans() {
         return reclaim("orphaned", SELECT_ORPHANS, WaitingTicket.WORKER_REF);
     }
 
+    /**
+     * {@code queue.reclaim-on-startup}이 켜져 있으면 기동 직후 {@link #reclaimOrphans}를 한 번 부른다.
+     * 실패해도 기동은 계속한다. 이전 프로세스가 죽었으므로 그 티켓의 리스는 더 연장되지 않고 늦어도 30초 안에 끝나며,
+     * 그 뒤 주기 점검 {@link #reclaimExpired}가 같은 규칙으로 회수한다. 로그에는 티켓 번호와 사용자 정보를 남기지 않는다.
+     */
     @EventListener(ApplicationReadyEvent.class)
     public void reclaimOrphansOnStartup() {
-        if (properties.isReclaimOnStartup()) {
+        if (!properties.isReclaimOnStartup()) {
+            return;
+        }
+        try {
             reclaimOrphans();
+        } catch (RuntimeException ex) {
+            // 예외 메시지에 행 값(Failing row contains ...)이 들어갈 수 있어 예외 유형만 남긴다(INV-10)
+            log.error("Startup reclaim of orphaned PROCESSING tickets failed ({}); the periodic lease-expiry check"
+                    + " will reclaim them once their leases (at most 30 s, no longer renewed) expire",
+                    ex.getClass().getName());
         }
     }
 
