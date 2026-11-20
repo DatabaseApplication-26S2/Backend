@@ -144,21 +144,10 @@ public class WaitingTicket {
     }
 
     /**
-     * 접수 시각 {@code issuedAt}은 JVM 시계가 아니라, 접수 트랜잭션이 DB 시계 {@code clock_timestamp()}로 읽은 값이다
-     * (구현계획 4절 (1)). 처리 시작·종결 시각과 같은 시계를 쓴다. 신청·취소 팩터리도 같다.
+     * 접수 시각 {@code issuedAt}은 JVM 시계가 아니라, 접수 트랜잭션이 접수 잠금을 얻은 뒤 DB 시계 {@code clock_timestamp()}로
+     * 읽은 값이다(구현계획 4절 (1)). 처리 시작·종결 시각과 같은 시계를 쓴다. 취소 팩터리도 같다.
+     * 입장 티켓은 AuthService.requestAdmission이 같은 접수 잠금 아래에서 직접 INSERT한다.
      */
-    public static WaitingTicket admission(String requesterUserId, String sessionRef, Instant issuedAt) {
-        return WaitingTicket.builder()
-                .requestType(TicketRequestType.ADMISSION)
-                .requesterUserId(requesterUserId)
-                .sessionRef(sessionRef)
-                .ticketIssuedAt(issuedAt)
-                .status(TicketStatus.RECEIVED)
-                .retryCount(0)
-                .generationNo(0)
-                .build();
-    }
-
     public static WaitingTicket enrollment(
             String requesterUserId,
             String sessionRef,
