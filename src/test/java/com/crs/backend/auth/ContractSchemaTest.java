@@ -11,12 +11,23 @@ class ContractSchemaTest {
     static final ObjectMapper JSON = new ObjectMapper();
     static java.util.Set<com.networknt.schema.ValidationMessage> errors(String name, String body) throws Exception {
         ObjectNode root;
-        try (var input = ContractSchemaTest.class.getResourceAsStream("/contract/notion-schemas.json")) {
-            root = (ObjectNode) JSON.readTree(input);
+        try (var input = ContractSchemaTest.class.getResourceAsStream("/contract/openapi.yaml")) {
+            var spec = new ObjectMapper(new com.fasterxml.jackson.dataformat.yaml.YAMLFactory()).readTree(input);
+            root = JSON.createObjectNode();
+            root.put("$schema", "https://json-schema.org/draft/2020-12/schema");
+            root.set("components", spec.get("components"));
         }
         root.put("$ref", "#/components/schemas/" + name);
         var schema = JsonSchemaFactory.getInstance(SpecVersion.VersionFlag.V202012).getSchema(root);
         return schema.validate(JSON.readTree(body));
+    }
+    @Test void frozenContractHasTheAgreedSha256() throws Exception {
+        try (var input = getClass().getResourceAsStream("/contract/openapi.yaml")) {
+            byte[] contract = input.readAllBytes();
+            assertEquals("4ad2af2c78eea13aa46aac2bec5ac285c136f6048a538121b29df1547ca3e5bc",
+                java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(contract)));
+            assertArrayEquals(contract, java.nio.file.Files.readAllBytes(java.nio.file.Path.of("docs/openapi.yaml")));
+        }
     }
     static void assertValid(String name, String body) throws Exception {
         assertTrue(errors(name, body).isEmpty(), "Response violates " + name);

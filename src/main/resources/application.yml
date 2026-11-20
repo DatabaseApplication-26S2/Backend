@@ -50,3 +50,5 @@ queue:
   reclaim-fixed-delay-ms: 10000
   lease-renew-fixed-delay-ms: 10000
   reclaim-on-startup: true
+  reconcile-enabled: true
+  reconcile-fixed-delay-ms: 10000
