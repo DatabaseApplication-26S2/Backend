@@ -16,6 +16,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -43,8 +46,16 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.DefaultTransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.doAnswer;
 
 /**
  * BE-17 안전 대기 복귀 통합 테스트(구현계획 4절 (4) 2번, (8) 5번, 7절 T9). 실제 PostgreSQL 위에서 돈다.
@@ -88,9 +99,10 @@ class SafeWaitReturnIntegrationTest {
     @Autowired JdbcClient jdbc;
     @Autowired DataSource dataSource;
     @Autowired TicketDispatcher dispatcher;
-    @Autowired EnrollmentTicketHandler enrollmentHandler;
+    @MockitoSpyBean EnrollmentTicketHandler enrollmentHandler;
     @Autowired WaitingTicketJpaRepository tickets;
     @Autowired ServiceSettingsService settings;
+    @Autowired PlatformTransactionManager txManager;
     @Autowired RedissonClient redisson;
     @Autowired QueueProperties queueProperties;
     /** 주기 스케줄러의 첫 claim이 준비 중인 WAITING 티켓을 먼저 가져가지 않게 끈다. 명시 호출과 N 변경 뒤 kick은 그대로 동작한다 */
@@ -228,6 +240,19 @@ class SafeWaitReturnIntegrationTest {
         return future.get(WAIT_SECONDS, TimeUnit.SECONDS);
     }
 
+    /** 넘겨 둔 작업이 예외로 끝났으면 제한 시간까지 기다리지 않고 그 예외로 바로 실패시킨다. 조건 판정용으로 항상 false를 돌려준다 */
+    private static boolean failOnDeferredError(List<Future<?>> deferred) {
+        for (Future<?> future : deferred) {
+            if (!future.isDone()) continue;
+            try {
+                future.get();
+            } catch (Exception e) {
+                throw new AssertionError("넘겨 둔 핸들러 작업이 실패했다", e);
+            }
+        }
+        return false;
+    }
+
     @Test void t9_같은_과목의_앞_티켓이_처리중이면_뒤_티켓은_과목_잠금을_기다리지_않고_대기로_돌아가고_앞이_먼저_끝난다() throws Exception {
         long a = processing(courseX, CODE_X);
         long b = waiting(courseX, CODE_X);
@@ -285,76 +310,90 @@ class SafeWaitReturnIntegrationTest {
         assertThat(processingCount()).isZero();
     }
 
-    @Test void t9_N3에서_1번_Y_2번_X_3번_X를_배정하면_3번은_횟수_증가없이_복귀하고_N을_내려도_1_2_3_순으로_끝난다() throws Exception {
+    @Test void t9_N3에서_1번_Y_2번_X_3번_X를_한_배치로_배정하면_3번은_횟수_증가없이_복귀하고_N을_내려도_1_2_3_순으로_끝난다() throws Exception {
         sql.update("UPDATE service_settings SET concurrency_limit=3");
         long t1 = waiting(courseY, CODE_Y);
         long t2 = waiting(courseX, CODE_X);
-        long[] third = new long[1];
-        ExecutorService batchPool = pool();
+        long t3 = waiting(courseX, CODE_X);
         ExecutorService workerPool = pool();
+        ExecutorService deferredPool = pool();
 
-        try (Connection holderY = dataSource.getConnection(); Connection holderX = dataSource.getConnection()) {
-            int pidY = lockCourse(holderY, courseY);
-            int pidX = lockCourse(holderX, courseX);
-            try {
-                // 과목 Y·X 잠금을 모두 남이 쥐고 있다. 첫 배치가 1번·2번을 claim하고(A=2) 1번 핸들러가 Y 잠금에서 멈춘다.
-                // 디스패처는 한 배치를 한 스레드에서 차례로 돌리므로, 3번을 같은 배치에 넣으면 2번이 끝난 뒤에야 핸들러가 돈다.
-                // 그래서 3번은 첫 claim 뒤에 접수하고 별도의 claimAndDispatch() 호출(스케줄러·DispatchKick과 겹치는 상황)이 맡게 한다
-                Future<Integer> batch = batchPool.submit(dispatcher::claimAndDispatch);
-                await("1번·2번 claim과 1번 워커의 Y 잠금 대기", () -> processingCount() == 2 && blockedBy(pidY) == 1);
-                assertThat(row(t1).get("status_cd")).isEqualTo("PROCESSING");
-                assertThat(row(t2).get("status_cd")).isEqualTo("PROCESSING");
-                long t3 = third[0] = waiting(courseX, CODE_X);
-
-                // 두 번째 디스패치가 3번을 claim(N′=1)하고 실제 핸들러 호출로 처리한다.
-                // 2번이 미완료이므로 과목 잠금에 닿지 않고 복귀한다. 호출이 제한 시간 안에 끝나는 것이 그 증거다
-                int claimedSecond = within(workerPool, dispatcher::claimAndDispatch);
-                assertThat(claimedSecond).as("두 번째 디스패치는 3번만 claim").isEqualTo(1);
-
-                Map<String, Object> returned = row(t3);
-                assertThat(returned.get("status_cd")).isEqualTo("WAITING");
-                assertThat(returned.get("result_cd")).isNull();
-                assertThat(returned.get("generation_no")).as("claim 때의 세대 그대로").isEqualTo(1);
-                assertThat(returned.get("retry_count")).as("횟수 증가 없음").isEqualTo(0);
-                assertThat(returned.get("owner_worker_ref")).isNull();
-                assertThat(returned.get("lease_info")).isNull();
-                assertThat(returned.get("slot_claim_ref")).isNull();
-                assertThat(returned.get("processing_started_at")).isNull();
-                assertThat(processingCount()).as("1번·2번이 슬롯을 쥔 채").isEqualTo(2);
-                assertThat(blockedBy(pidY)).as("3번은 잠금을 기다리지 않음").isEqualTo(1);
-                assertThat(blockedBy(pidX)).isZero();
-
-                // 1번·2번이 미완료인 동안 N을 1로 내린다. N′ = 0이므로 3번은 claim되지 않는다
-                settings.update(ADMIN_USER, new ServiceSettingsUpdateRequest(1));
-                assertThat(sql.queryForObject("SELECT concurrency_limit FROM service_settings", Integer.class)).isEqualTo(1);
-                assertThat(within(workerPool, dispatcher::claimAndDispatch)).as("A=2 ≥ N=1: claim 없음").isZero();
-                assertThat(row(t3).get("status_cd")).isEqualTo("WAITING");
-                assertThat(row(t3).get("generation_no")).isEqualTo(1);
-                assertThat(processingCount()).isEqualTo(2);
-
-                // Y 해제: 1번 종결. 2번은 X 잠금 때문에 아직 PROCESSING이라 A=1 ≥ N이므로 claim은 여전히 0이다
-                holderY.rollback();
-                await("1번 종결", () -> "SUCCEEDED".equals(row(t1).get("status_cd")));
-                assertThat(row(t2).get("status_cd")).isEqualTo("PROCESSING");
-                assertThat(within(workerPool, dispatcher::claimAndDispatch)).as("A=1 ≥ N=1: claim 없음").isZero();
-                assertThat(row(t3).get("status_cd")).isEqualTo("WAITING");
-
-                // X 해제: 2번 종결, 첫 배치 종료
-                holderX.rollback();
-                assertThat(batch.get(WAIT_SECONDS * 3, TimeUnit.SECONDS)).as("첫 배치는 1번·2번만 claim").isEqualTo(2);
-            } finally {
-                holderY.rollback();
-                holderX.rollback();
+        // 계획 4절 (6) "claim한 티켓마다 작업 하나를 실행기에 넘긴다"를 흉내 낸다.
+        // 1번·2번의 디스패처 호출은 별도 스레드로 넘기고(래치를 기다린 뒤 진짜 핸들러 실행) 디스패처에는 곧바로 돌려준다.
+        // 3번의 디스패처 호출은 진짜 핸들러를 그 자리에서 실행한다
+        Map<Long, CountDownLatch> latches = new ConcurrentHashMap<>();
+        latches.put(t1, new CountDownLatch(1));
+        latches.put(t2, new CountDownLatch(1));
+        List<Future<?>> deferred = new CopyOnWriteArrayList<>();
+        doAnswer(invocation -> {
+            long id = ((WaitingTicket) invocation.getArgument(0)).getTicketId();
+            CountDownLatch latch = latches.get(id);
+            if (latch == null) {
+                return invocation.callRealMethod();
             }
+            deferred.add(deferredPool.submit(() -> {
+                assertThat(latch.await(WAIT_SECONDS * 3, TimeUnit.SECONDS)).as("래치 해제 대기").isTrue();
+                // 스파이의 callRealMethod는 @Transactional 프록시를 거치지 않는다(프록시는 디스패처 스레드에서 이미 끝났다).
+                // 실행기 작업이 새 스레드에서 도는 상황과 같게 REQUIRES_NEW 트랜잭션을 직접 열어 진짜 핸들러를 부른다
+                new TransactionTemplate(txManager, new DefaultTransactionDefinition(TransactionDefinition.PROPAGATION_REQUIRES_NEW))
+                    .executeWithoutResult(status -> {
+                        try {
+                            invocation.callRealMethod();
+                        } catch (RuntimeException | Error e) {
+                            throw e;
+                        } catch (Throwable e) {
+                            throw new IllegalStateException(e);
+                        }
+                    });
+                return null;
+            }));
+            return null;
+        }).when(enrollmentHandler).handle(any(), anyInt());
+
+        try {
+            // N=3이므로 한 번의 claim이 1·2·3번을 모두 잡는다. 3번 핸들러는 2번이 미완료라 곧바로 WAITING으로 복귀한다
+            assertThat(within(workerPool, dispatcher::claimAndDispatch)).as("한 배치로 3건 claim").isEqualTo(3);
+
+            assertThat(row(t1).get("status_cd")).as("1번은 미완료, 슬롯 보유").isEqualTo("PROCESSING");
+            assertThat(row(t2).get("status_cd")).as("2번은 미완료, 슬롯 보유").isEqualTo("PROCESSING");
+            assertThat(processingCount()).isEqualTo(2);
+            Map<String, Object> returned = row(t3);
+            assertThat(returned.get("status_cd")).isEqualTo("WAITING");
+            assertThat(returned.get("result_cd")).isNull();
+            assertThat(returned.get("generation_no")).as("claim 때의 세대 그대로").isEqualTo(1);
+            assertThat(returned.get("retry_count")).as("횟수 증가 없음").isEqualTo(0);
+            assertThat(returned.get("owner_worker_ref")).isNull();
+            assertThat(returned.get("lease_info")).isNull();
+            assertThat(returned.get("slot_claim_ref")).isNull();
+            assertThat(returned.get("processing_started_at")).isNull();
+            assertThat(returned.get("processing_finished_at")).isNull();
+
+            // 1번·2번이 미완료인 동안 N을 1로 내린다. 호출이 제한 시간 안에 끝나야 한다. N′ = 0이므로 3번은 claim되지 않는다
+            within(workerPool, () -> settings.update(ADMIN_USER, new ServiceSettingsUpdateRequest(1)));
+            assertThat(sql.queryForObject("SELECT concurrency_limit FROM service_settings", Integer.class)).isEqualTo(1);
+            assertThat(within(workerPool, dispatcher::claimAndDispatch)).as("A=2 ≥ N=1: claim 없음").isZero();
+            assertThat(row(t3).get("status_cd")).isEqualTo("WAITING");
+            assertThat(row(t3).get("generation_no")).isEqualTo(1);
+            assertThat(processingCount()).isEqualTo(2);
+
+            // 1번 처리 허용: 1번 종결. 2번이 아직 슬롯을 쥐므로 A=1 ≥ N=1이고 claim은 여전히 0이다
+            latches.get(t1).countDown();
+            await("1번 종결", () -> failOnDeferredError(deferred) || "SUCCEEDED".equals(row(t1).get("status_cd")));
+            assertThat(row(t2).get("status_cd")).isEqualTo("PROCESSING");
+            assertThat(within(workerPool, dispatcher::claimAndDispatch)).as("A=1 ≥ N=1: claim 없음").isZero();
+            assertThat(row(t3).get("status_cd")).isEqualTo("WAITING");
+
+            // 2번 처리 허용: 2번 종결
+            latches.get(t2).countDown();
+            await("2번 종결", () -> failOnDeferredError(deferred) || "SUCCEEDED".equals(row(t2).get("status_cd")));
+
+            // A=0이므로 다음 claim이 3번을 다시 잡는다. N 변경 뒤 DispatchKick이 먼저 잡았을 수 있어 반환값은 단정하지 않고 종결만 기다린다
+            within(workerPool, dispatcher::claimAndDispatch);
+            await("3번 종결", () -> failOnDeferredError(deferred) || "SUCCEEDED".equals(row(t3).get("status_cd")));
+        } finally {
+            latches.values().forEach(CountDownLatch::countDown);
         }
-        long t3 = third[0];
-
-        assertThat(row(t2).get("status_cd")).isEqualTo("SUCCEEDED");
-        assertThat(row(t2).get("result_cd")).isEqualTo("OK");
-
-        // A=0이므로 다음 claim이 3번을 다시 잡는다. N 변경 뒤 DispatchKick이 먼저 잡았을 수 있어 반환값은 단정하지 않고 종결만 기다린다
-        dispatcher.claimAndDispatch();
-        await("3번 종결", () -> "SUCCEEDED".equals(row(t3).get("status_cd")));
+        for (Future<?> future : deferred) future.get(WAIT_SECONDS * 3, TimeUnit.SECONDS);
 
         for (long id : new long[] {t1, t2, t3}) {
             assertThat(row(id).get("status_cd")).isEqualTo("SUCCEEDED");

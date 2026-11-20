@@ -16,6 +16,8 @@ import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
@@ -101,23 +103,25 @@ class ThrottleDownIntegrationTest {
     private final List<String> courses = new ArrayList<>();
     private final List<Long> ticketIds = new ArrayList<>();
 
-    private static final String KICK_THREAD = "settings-dispatch-kick";
-    /** claimAndDispatch 호출이 끝날 때마다 {호출 스레드 이름, 반환값}을 쌓는다 */
+    /** 이 테스트가 만든 스레드. 여기서 부른 claim은 명시 호출이고, 그 밖의 스레드에서 도는 claim은 N 변경 뒤 깨우기다 */
+    private final Set<Thread> ownThreads = ConcurrentHashMap.newKeySet();
+    /** claimAndDispatch 호출이 끝날 때마다 {호출 스레드, 반환값}을 쌓는다 */
     private final List<Object[]> claimCalls = new CopyOnWriteArrayList<>();
 
     private List<Integer> kickResults() {
         List<Integer> results = new ArrayList<>();
         for (Object[] call : claimCalls) {
-            if (KICK_THREAD.equals(call[0])) results.add((Integer) call[1]);
+            if (!ownThreads.contains((Thread) call[0])) results.add((Integer) call[1]);
         }
         return results;
     }
 
     @BeforeEach void setup() {
         claimCalls.clear();
+        ownThreads.clear();
         doAnswer(invocation -> {
             Object result = invocation.callRealMethod();
-            claimCalls.add(new Object[] {Thread.currentThread().getName(), result});
+            claimCalls.add(new Object[] {Thread.currentThread(), result});
             return result;
         }).when(dispatcher).claimAndDispatch();
         sql.execute("TRUNCATE enrollments, refresh_tokens, sessions, tickets, courses, users CASCADE");
@@ -217,7 +221,12 @@ class ThrottleDownIntegrationTest {
 
     @Test void t7_N을_5에서_1로_낮추면_진행_중_작업은_끝까지_가고_A가_0이_되어야_신규_claim이_생긴다() throws Exception {
         List<Connection> holders = new ArrayList<>();
-        ExecutorService pool = Executors.newFixedThreadPool(3);
+        ExecutorService pool = Executors.newFixedThreadPool(3, runnable -> {
+            Thread thread = new Thread(runnable, "throttle-test-worker");
+            thread.setDaemon(true);
+            ownThreads.add(thread);
+            return thread;
+        });
         try {
             // 진행 중 과목 5개를 서로 다른 연결로 잠근다. 핸들러가 과목 행 잠금에서 막힌다
             for (int i = 0; i < IN_FLIGHT; i++) {
@@ -246,12 +255,14 @@ class ThrottleDownIntegrationTest {
             }
             assertExtrasUntouched(IN_FLIGHT, "하향 전");
 
-            // 진행 중에 N을 1로 낮춘다(설정 변경은 회계 잠금만 쥐므로 막힌 핸들러와 무관하게 끝난다)
-            assertThat(settings.update(ADMIN_USER, new ServiceSettingsUpdateRequest(1)).concurrencyLimit()).isEqualTo(1);
+            // 진행 중에 N을 1로 낮춘다. 과목 잠금이 잡힌 채라 회귀하면 멈출 수 있으므로 별도 스레드에서 제한 시간을 두고 부른다
+            Future<Integer> update = pool.submit(() ->
+                settings.update(ADMIN_USER, new ServiceSettingsUpdateRequest(1)).concurrencyLimit());
+            assertThat(update.get(10, TimeUnit.SECONDS)).as("N 변경은 막힌 핸들러·과목 잠금과 무관하게 끝난다").isEqualTo(1);
             assertThat(limit()).isEqualTo(1);
-            // 커밋 뒤 깨우기 스레드(settings-dispatch-kick)의 claim이 실제로 끝날 때까지 기다리고, 0을 돌려줬는지 확인한다.
-            // 그래야 이후 잠금 해제와 겹쳐 뒤늦게 claim이 도는 일이 없다
-            awaitUntil("깨우기 스레드의 claim 호출 완료", () -> kickResults().size() >= 1, flight);
+            // 커밋 뒤 깨우기 claim(이 테스트가 소유한 스레드가 아닌 곳에서 도는 claim 호출)이 실제로 끝날 때까지 기다리고,
+            // 0을 돌려줬는지 확인한다. 그래야 이후 잠금 해제와 겹쳐 뒤늦게 claim이 도는 일이 없다
+            awaitUntil("깨우기 claim 호출 완료", () -> kickResults().size() >= 1, flight);
             assertThat(kickResults()).as("깨우기 claim은 A=5 ≥ N=1이라 0건").containsOnly(0);
             observeStable(IN_FLIGHT, "하향 직후(깨우기 후)");
             assertClaimNothing(pool, "하향 직후 명시 claim");

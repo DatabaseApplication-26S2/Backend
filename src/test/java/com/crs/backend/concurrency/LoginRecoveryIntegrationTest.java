@@ -100,6 +100,8 @@ class LoginRecoveryIntegrationTest {
     private final AtomicBoolean skipNext = new AtomicBoolean();
     private final AtomicReference<WaitingTicket> skippedSnapshot = new AtomicReference<>();
     private final AtomicInteger skippedGeneration = new AtomicInteger();
+    /** 건너뛴 핸들러 호출이 기록되면 내려간다. 디스패처가 작업을 다른 스레드에서 돌려도 호출 시점을 기다릴 수 있다 */
+    private volatile CountDownLatch skippedLatch = new CountDownLatch(1);
 
     @BeforeEach void setup() {
         sql.execute("TRUNCATE enrollments, refresh_tokens, sessions, tickets, courses, users CASCADE");
@@ -118,6 +120,7 @@ class LoginRecoveryIntegrationTest {
             if (skipNext.compareAndSet(true, false)) {
                 skippedSnapshot.set(invocation.getArgument(0));
                 skippedGeneration.set(invocation.getArgument(1));
+                skippedLatch.countDown();
                 return null;
             }
             return invocation.callRealMethod();
@@ -150,10 +153,36 @@ class LoginRecoveryIntegrationTest {
 
     /** 배정은 하되 핸들러 실행은 건너뛰어 PROCESSING 상태의 티켓을 남긴다. 건너뛴 (스냅샷, 세대)는 skipped*에 남는다 */
     private void claimWithoutRunning() {
+        skippedSnapshot.set(null);
+        skippedLatch = new CountDownLatch(1);
         skipNext.set(true);
         assertThat(dispatcher.claimAndDispatch()).isEqualTo(1);
-        assertThat(skipNext.get()).as("핸들러 첫 호출이 건너뛰어졌다").isFalse();
+        try {
+            assertThat(skippedLatch.await(10, TimeUnit.SECONDS)).as("핸들러 첫 호출이 건너뛰어졌다").isTrue();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("건너뛴 핸들러 호출을 기다리다 중단됨", e);
+        }
+        assertThat(skipNext.get()).isFalse();
         assertThat(skippedSnapshot.get()).isNotNull();
+    }
+
+    /** 티켓이 종결 상태(SUCCEEDED/REJECTED)가 될 때까지 DB를 제한 시간 안에서 다시 읽는다 */
+    private void awaitTerminal(long ticketId) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
+        while (System.nanoTime() < deadline) {
+            String status = sql.queryForObject("SELECT status_cd FROM tickets WHERE ticket_id=?", String.class, ticketId);
+            if ("SUCCEEDED".equals(status) || "REJECTED".equals(status)) {
+                return;
+            }
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("종결을 기다리다 중단됨", e);
+            }
+        }
+        throw new AssertionError("티켓 " + ticketId + "이(가) 제한 시간 안에 종결되지 않았다: " + row(ticketId));
     }
 
     private void expireLease(long ticketId) {
@@ -196,6 +225,7 @@ class LoginRecoveryIntegrationTest {
 
         // 자격 증명이 소비되지 않았으므로 다음 배정이 정상 로그인으로 끝낸다
         assertThat(dispatcher.claimAndDispatch()).isEqualTo(1);
+        awaitTerminal(id);
 
         Map<String, Object> done = row(id);
         assertThat(done.get("status_cd")).isEqualTo("SUCCEEDED");
@@ -321,6 +351,7 @@ class LoginRecoveryIntegrationTest {
         credentials.discard(contextOf(id));
 
         assertThat(dispatcher.claimAndDispatch()).isEqualTo(1);
+        awaitTerminal(id);
 
         Map<String, Object> after = row(id);
         assertThat(after.get("status_cd")).isEqualTo("REJECTED");
@@ -342,6 +373,7 @@ class LoginRecoveryIntegrationTest {
         credentials.discard(contextOf(id));
 
         assertThat(dispatcher.claimAndDispatch()).isEqualTo(1);
+        awaitTerminal(id);
 
         Map<String, Object> after = row(id);
         assertThat(after.get("status_cd")).isEqualTo("REJECTED");
@@ -369,6 +401,7 @@ class LoginRecoveryIntegrationTest {
         assertFreed(reclaimed);
 
         assertThat(dispatcher.claimAndDispatch()).isEqualTo(1);
+        awaitTerminal(id);
 
         Map<String, Object> after = row(id);
         assertThat(after.get("status_cd")).isEqualTo("REJECTED");
