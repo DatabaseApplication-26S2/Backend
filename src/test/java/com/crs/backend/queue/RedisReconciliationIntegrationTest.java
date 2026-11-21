@@ -109,6 +109,7 @@ class RedisReconciliationIntegrationTest {
     @Test void t10c_deletedKeyIsRebuiltOnRestartAndTicketsFinish() {
         long a = id(login()), b = id(login());
         copy.delete();
+        // Stands in for an application restart; it does not exercise the ApplicationReadyEvent wiring.
         new RedisWaitingOrderReconciler(redis, jdbc, properties, true).rebuildOnStartup();
         assertMirror(); assertEquals(2, copy.size());
         assertEquals(2, claimAndFinish());
@@ -126,7 +127,16 @@ class RedisReconciliationIntegrationTest {
             assertEquals(1, claimAndFinish());
             assertEquals("SUCCEEDED", status(id(ticket)));
         } finally { container.getDockerClient().unpauseContainerCmd(container.getContainerId()).exec(); }
-        reconciler.reconcile(); assertMirror(); assertEquals(0, copy.size());
+        // Commands queued on the socket during the pause may land after a reconcile snapshot; retry (bounded) until converged.
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+        while (true) {
+            reconciler.reconcile();
+            try { assertMirror(); assertEquals(0, copy.size()); break; }
+            catch (AssertionError | RuntimeException notYet) {
+                if (System.nanoTime() > deadline) throw notYet;
+                try { Thread.sleep(100); } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw notYet; }
+            }
+        }
         assertNotNull(auth.exchange(id(ticket), ticket.proof()).accessToken());
     }
     // T10 (e): queuePosition = earlier WAITING tickets + 1, whatever Redis holds.

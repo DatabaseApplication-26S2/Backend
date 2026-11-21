@@ -65,6 +65,28 @@ class OpenApiResponsesTest {
         String wrongType = VALID_PROBLEM.replace("\"status\":401", "\"status\":\"401\"");
         assertThrows(AssertionError.class, () -> OpenApiResponses.verify("/tickets/{ticketId}", "get", valid401(wrongType)));
     }
+    // ProblemDetails schema constraints: ProblemCode enum, status range 400..599, and allOf if/then conditions.
+    @Test void enumViolationIsRejected() throws Exception {
+        String badCode = VALID_PROBLEM.replace("\"code\":\"E02\"", "\"code\":\"E00\"");
+        assertThrows(AssertionError.class, () -> OpenApiResponses.verify("/tickets/{ticketId}", "get", valid401(badCode)));
+    }
+    @Test void rangeViolationIsRejected() throws Exception {
+        String belowMinimum = VALID_PROBLEM.replace("\"status\":401", "\"status\":399");
+        assertThrows(AssertionError.class, () -> OpenApiResponses.verify("/tickets/{ticketId}", "get", valid401(belowMinimum)));
+    }
+    @Test void conditionalSchemaE09WithoutViolationsIsRejected() throws Exception {
+        // 400 is declared for GET /tickets/{ticketId}; E09 then requires `violations`.
+        String body = "{\"type\":\"urn:crs:problem:E09\",\"title\":\"Bad request\",\"status\":400,"
+            + "\"detail\":\"Invalid ticket id\",\"code\":\"E09\"}";
+        var response = response(400, PROBLEM_JSON, body);
+        response.setHeader("Cache-Control", "no-store");
+        assertThrows(AssertionError.class, () -> OpenApiResponses.verify("/tickets/{ticketId}", "get", response));
+    }
+    @Test void conditionalSchemaReasonStatusMismatchIsRejected() throws Exception {
+        // reason LOGIN_PROOF_INVALID requires status 403, but the body says 401 (and the response is a declared 401).
+        String body = VALID_PROBLEM.replace("\"code\":\"E02\"", "\"code\":\"E02\",\"reason\":\"LOGIN_PROOF_INVALID\"");
+        assertThrows(AssertionError.class, () -> OpenApiResponses.verify("/tickets/{ticketId}", "get", valid401(body)));
+    }
     @Test void bodyWithExtraPropertyIsRejected() throws Exception {
         String extra = VALID_PROBLEM.replace("\"code\":\"E02\"", "\"code\":\"E02\",\"unexpected\":true");
         assertThrows(AssertionError.class, () -> OpenApiResponses.verify("/tickets/{ticketId}", "get", valid401(extra)));
