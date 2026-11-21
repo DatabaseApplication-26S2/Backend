@@ -11,6 +11,8 @@ DEMO01은 정원 3, 초기 신청 0명이다. 아래 명령은 PowerShell 7 기�
 ./scripts/demo-concurrent.ps1 -Scenario Login -Base http://127.0.0.1:18080/api/v1
 ```
 
+스크립트는 PowerShell 7 이상(`pwsh`)이 필요하다. 설치: Windows `winget install Microsoft.PowerShell`, macOS `brew install powershell`.
+
 관리자로 N을 2로 설정하고, 별도 병렬 작업 5개가 접수→조회→토큰 수령을 진행한다.
 5건 모두 OK여야 한다. 종료 시 원래 N을 복원한다. 토큰과 쿠키는 출력하지 않는다.
 동시 요청은 실행 시점까지 완전히 일치한다는 뜻이 아니라 5개 작업이 겹쳐 실행된다는 뜻이다.

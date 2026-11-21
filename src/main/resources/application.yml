@@ -30,9 +30,10 @@ spring:
   task:
     scheduling:
       pool:
-        # 기본 1개 스레드면 @Scheduled 작업 하나가 늦어질 때(예: 회계 잠금 대기) 리스 연장·회수도 함께 멈춘다(구현계획 4절 (8)).
-        # @Scheduled 작업 4개(디스패처·회수·리스 연장·로그인 자격 증명 청소)가 서로 기다리지 않게 한다
-        size: 4
+        # 기본 1개 스레드면 @Scheduled 작업 하나가 늦어질 때(예: 회계 잠금 대기, Redis 응답 지연·타임아웃) 나머지 작업도 함께 멈춘다(구현계획 4절 (8)).
+        # @Scheduled 작업 5개(디스패처 claim·회수·리스 연장·로그인 자격 증명 청소·Redis 대기 순서 재조정)가 서로 기다리지 않게 하나씩 둔다.
+        # 디스패처는 claim 트랜잭션 동안만 이 스레드를 쥐고, 티켓 핸들러는 커밋 뒤 별도 워커(queue.worker-concurrency)에서 돈다.
+        size: 5
 
 management:
   endpoints:
