@@ -305,6 +305,7 @@ class ThrottleDownIntegrationTest {
             long firstExtra = ticketIds.get(IN_FLIGHT);
             awaitUntil("가장 작은 WAITING 티켓 종결", () -> "SUCCEEDED".equals(status(firstExtra)), next);
             next.get(WAIT_SECONDS, TimeUnit.SECONDS);
+            assertThat(dispatcher.awaitIdle(java.time.Duration.ofSeconds(WAIT_SECONDS))).as("모든 작업 종료").isTrue();
             Map<String, Object> first = row(firstExtra);
             assertThat(first.get("result_cd")).isEqualTo("OK");
             assertThat(first.get("generation_no")).as("정확히 한 번 claim").isEqualTo(1);

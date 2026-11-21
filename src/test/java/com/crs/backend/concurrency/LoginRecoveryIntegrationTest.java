@@ -165,6 +165,8 @@ class LoginRecoveryIntegrationTest {
         }
         assertThat(skipNext.get()).isFalse();
         assertThat(skippedSnapshot.get()).isNotNull();
+        // 건너뛴 작업이 끝나 추적이 풀릴 때까지 기다린다(리스 갱신기가 이후 만료 시나리오를 흔들지 않도록)
+        assertThat(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10))).isTrue();
     }
 
     /** 티켓이 종결 상태(SUCCEEDED/REJECTED)가 될 때까지 DB를 제한 시간 안에서 다시 읽는다 */
@@ -173,6 +175,7 @@ class LoginRecoveryIntegrationTest {
         while (System.nanoTime() < deadline) {
             String status = sql.queryForObject("SELECT status_cd FROM tickets WHERE ticket_id=?", String.class, ticketId);
             if ("SUCCEEDED".equals(status) || "REJECTED".equals(status)) {
+                assertThat(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10))).isTrue();
                 return;
             }
             try {

@@ -301,16 +301,22 @@ class TicketRecoveryIntegrationTest {
         long second = waiting();
         AtomicInteger renewedDuringFirst = new AtomicInteger(-1);
         AtomicInteger calls = new AtomicInteger();
+        // 핸들러는 워커 스레드에서 동시에 돈다. 먼저 들어온 호출이 연장을 끝낼 때까지 나머지는 핸들러 안에서 기다려, 둘 다 진행 중(추적 중)인 상태를 고정한다
+        java.util.concurrent.CountDownLatch renewalDone = new java.util.concurrent.CountDownLatch(1);
         doAnswer(invocation -> {
             if (calls.getAndIncrement() == 0) {
                 // 첫 핸들러가 도는 중: 두 티켓의 리스를 만료 직전으로 당긴 뒤 연장 작업을 돌린다
                 sql.update("UPDATE tickets SET lease_info=clock_timestamp() + interval '2 seconds' WHERE status_cd='PROCESSING'");
                 renewedDuringFirst.set(renewer.renewLeases());
+                renewalDone.countDown();
+            } else if (!renewalDone.await(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                throw new AssertionError("연장 작업이 제한 시간 안에 끝나지 않았다");
             }
             return null;
         }).when(enrollmentHandler).handle(any(), anyInt());
 
         assertThat(dispatcher.claimAndDispatch()).isEqualTo(2);
+        assertThat(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10))).isTrue();
 
         assertThat(calls.get()).isEqualTo(2);
         assertThat(renewedDuringFirst.get()).as("아직 처리 전인 두 번째 티켓까지 추적 중").isEqualTo(2);
@@ -323,6 +329,7 @@ class TicketRecoveryIntegrationTest {
         doThrow(new IllegalStateException("워커 강제 중단")).when(enrollmentHandler).handle(any(), anyInt());
 
         assertThat(dispatcher.claimAndDispatch()).isEqualTo(1);
+        assertThat(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10))).isTrue();
 
         Map<String, Object> after = row(id);
         assertThat(after.get("status_cd")).isEqualTo("PROCESSING");
@@ -338,6 +345,7 @@ class TicketRecoveryIntegrationTest {
             .when(enrollmentHandler).handle(any(), anyInt());
 
         assertThat(dispatcher.claimAndDispatch()).isEqualTo(1);
+        assertThat(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10))).isTrue();
         assertThat(row(id).get("status_cd")).isEqualTo("PROCESSING");
         assertThat(sql.update("UPDATE tickets SET lease_info=clock_timestamp() - interval '5 seconds' WHERE ticket_id=?", id)).isEqualTo(1);
 
@@ -348,6 +356,7 @@ class TicketRecoveryIntegrationTest {
         assertThat(waiting.get("generation_no")).isEqualTo(2);
 
         assertThat(dispatcher.claimAndDispatch()).isEqualTo(1);
+        assertThat(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10))).isTrue();
 
         Map<String, Object> done = row(id);
         assertThat(done.get("status_cd")).isEqualTo("SUCCEEDED");

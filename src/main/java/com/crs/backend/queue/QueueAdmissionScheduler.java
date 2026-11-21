@@ -7,7 +7,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * 디스패처 트리거. 1초마다 TicketDispatcher.claimAndDispatch()를 불러
- * DB의 WAITING 티켓을 N′ = max(N − PROCESSING, 0)건까지 claim하고 유형별 핸들러를 실행한다.
+ * DB의 WAITING 티켓을 N′ = max(N − PROCESSING, 0)건까지 claim하고, 티켓마다 유형별 핸들러 작업을 워커 실행기에 넘긴다.
  */
 @Component
 public class QueueAdmissionScheduler {
