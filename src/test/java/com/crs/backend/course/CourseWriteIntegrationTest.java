@@ -83,6 +83,7 @@ class CourseWriteIntegrationTest {
     @Autowired MockMvc mvc;
     @Autowired AuthService auth;
     @Autowired QueueService queue;
+    @Autowired com.crs.backend.application.TicketDispatcher dispatcher;
     @Autowired RedissonClient redis;
     @Autowired UserAccountRepository users;
     @Autowired JdbcClient jdbc;
@@ -914,6 +915,7 @@ class CourseWriteIntegrationTest {
         RScoredSortedSet<String> waiting = redis.getScoredSortedSet("waiting_queue");
         when(waiting.pollFirst(anyInt())).thenReturn(List.of(receipt.ticketId()));
         queue.admitWaitingUsers();
+        assertThat(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10))).isTrue();
         when(waiting.pollFirst(anyInt())).thenReturn(List.of());
         return "Bearer " + auth.exchange(Long.parseLong(receipt.ticketId()), receipt.proof()).accessToken();
     }

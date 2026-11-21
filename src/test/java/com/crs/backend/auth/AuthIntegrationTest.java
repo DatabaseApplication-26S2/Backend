@@ -37,8 +37,10 @@ class AuthIntegrationTest {
     @Autowired WaitingTicketJpaRepository tickets;
     @Autowired LoginCredentialStore credentials;
     @Autowired QueueService queue;
+    @Autowired com.crs.backend.application.TicketDispatcher dispatcher;
     @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
     @Autowired org.springframework.transaction.support.TransactionTemplate tx;
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean TokenCodec codec;
     @jakarta.persistence.PersistenceContext jakarta.persistence.EntityManager em;
 
     @BeforeEach void seed() {
@@ -53,6 +55,7 @@ class AuthIntegrationTest {
         // DB claim 디스패처가 WAITING LOGIN 티켓을 잡아 processLogin 한다 (Redis poll 의존 제거)
         assertNotNull(receipt.ticketId());
         queue.admitWaitingUsers();
+        assertTrue(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10)));
     }
     @Test void httpLoginTokensProtectedApiAndLogout() throws Exception {
         var result = mvc.perform(post("/api/v1/auth/login").header("Origin", "http://localhost:5173").header("X-CSRF-Protection", "1").contentType("application/json")
@@ -138,16 +141,20 @@ class AuthIntegrationTest {
         var issued = issued();
         var executor = Executors.newFixedThreadPool(2);
         var start = new CountDownLatch(1);
-        Callable<Object> rotate = () -> {
+        Callable<org.springframework.mock.web.MockHttpServletResponse> rotate = () -> {
             start.await();
-            try { return auth.refresh(issued.refreshToken()); } catch (AuthFailure ex) { return ex; }
+            return mvc.perform(cookiePost("/api/v1/auth/refresh")
+                .cookie(new Cookie("__Host-crs_refresh", issued.refreshToken()))).andReturn().getResponse();
         };
         try {
             var a = executor.submit(rotate); var b = executor.submit(rotate); start.countDown();
             var first = a.get(15, TimeUnit.SECONDS); var second = b.get(15, TimeUnit.SECONDS);
-            assertTrue((first instanceof AuthService.IssuedTokens) != (second instanceof AuthService.IssuedTokens));
-            AuthFailure failed = (AuthFailure) (first instanceof AuthFailure ? first : second);
-            assertEquals("REFRESH_TOKEN_REUSED", failed.body().get("reason"));
+            assertEquals(List.of(200, 401), java.util.stream.Stream.of(first, second)
+                .map(org.springframework.mock.web.MockHttpServletResponse::getStatus).sorted().toList());
+            OpenApiResponses.verify("/auth/refresh", "post", first);
+            OpenApiResponses.verify("/auth/refresh", "post", second);
+            var failed = first.getStatus() == 401 ? first : second;
+            assertEquals("REFRESH_TOKEN_REUSED", json.readTree(failed.getContentAsString()).get("reason").asText());
             assertEquals("SESSION_REVOKED", assertThrows(AuthFailure.class, () -> auth.authenticate(issued.accessToken())).body().get("reason"));
             mvc.perform(cookiePost("/api/v1/auth/refresh").cookie(new Cookie("__Host-crs_refresh", issued.refreshToken())))
                 .andExpect(status().isUnauthorized()).andExpect(cookie().maxAge("__Host-crs_refresh", 0));
@@ -156,6 +163,7 @@ class AuthIntegrationTest {
     @Test void admissionIsPerSessionAndSurvivesRedisDeletionAndRefresh() throws Exception {
         var first = issued(); var firstUser = auth.authenticate(first.accessToken());
         auth.requestAdmission(firstUser.userId(), firstUser.sessionId()); queue.admitWaitingUsers();
+        assertTrue(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10)));
         assertTrue(auth.isAdmitted(firstUser.userId(), firstUser.sessionId()));
         var rotated = auth.refresh(first.refreshToken());
         assertNotNull(rotated.session().admittedAt());
@@ -167,6 +175,7 @@ class AuthIntegrationTest {
             .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("E15"));
         var receipt = (com.crs.backend.adapter.in.web.dto.TicketReceipt) auth.requestAdmission(secondUser.userId(), secondUser.sessionId());
         auth.logout(second.refreshToken()); queue.admitWaitingUsers();
+        assertTrue(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10)));
         assertEquals(TicketResultCode.E02, tickets.findById(Long.parseLong(receipt.ticketId())).orElseThrow().getResultCode());
     }
     @Test void logoutCookieHasPriorityAndAccessFallbackIsIdempotent() throws Exception {
@@ -227,6 +236,66 @@ class AuthIntegrationTest {
         assertEquals("LoginReceipt[redacted]", receipt.toString());
         for (String secret : List.of("Demo-password1!", receipt.proof(), issued.accessToken(), issued.refreshToken()))
             assertFalse(output.getAll().contains(secret), "Plaintext secret leaked to logs");
+    }
+
+
+    @Test void expirationDuringIssuanceRollsBackBothRefreshWrites() {
+        var token = issued();
+        String sid = auth.authenticate(token.accessToken()).sessionId();
+        int before = jdbc.queryForObject("SELECT count(*) FROM refresh_tokens WHERE session_id=CAST(? AS uuid)", Integer.class, sid);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            // Deterministically move the token's issuance time to the final fractional second.
+            var expiry = invocation.getArgument(3, java.time.Instant.class);
+            return new TokenCodec(AuthService.randomToken()).issue(invocation.getArgument(0), invocation.getArgument(1),
+                invocation.getArgument(2), expiry, expiry.minusNanos(1));
+        }).when(codec).issue(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        assertEquals("SESSION_EXPIRED", assertThrows(AuthFailure.class, () -> auth.refresh(token.refreshToken())).body().get("reason"));
+        assertEquals(before, jdbc.queryForObject("SELECT count(*) FROM refresh_tokens WHERE session_id=CAST(? AS uuid)", Integer.class, sid));
+        assertFalse(jdbc.queryForObject("SELECT consumed_at IS NOT NULL FROM refresh_tokens WHERE refresh_token_hash=?", Boolean.class, AuthService.hash(token.refreshToken())));
+    }
+    @Test void roleChangeHidesStudentAdmissionInTokenResponse() throws Exception {
+        var token = issued(); var user = auth.authenticate(token.accessToken());
+        auth.requestAdmission(user.userId(), user.sessionId()); queue.admitWaitingUsers();
+        assertTrue(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10)));
+        assertTrue(auth.isAdmitted(user.userId(), user.sessionId()));
+        jdbc.update("UPDATE users SET role_cd='PROFESSOR' WHERE user_id=?", user.userId());
+        var response = mvc.perform(cookiePost("/api/v1/auth/refresh").cookie(new Cookie("__Host-crs_refresh", token.refreshToken())))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.user.role").value("PROFESSOR"))
+            .andExpect(jsonPath("$.session.admittedAt").value(org.hamcrest.Matchers.nullValue())).andReturn().getResponse();
+        OpenApiResponses.verify("/auth/refresh", "post", response);
+        assertNotNull(jdbc.queryForObject("SELECT entered_at FROM sessions WHERE session_id=CAST(? AS uuid)", java.sql.Timestamp.class, user.sessionId()));
+    }
+    private org.springframework.mock.web.MockHttpServletResponse contract(String path, String method,
+            org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder request, int status) throws Exception {
+        var response = mvc.perform(request).andExpect(status().is(status)).andReturn().getResponse();
+        OpenApiResponses.verify(path, method, response); return response;
+    }
+    @Test void allSixAuthOperationsValidateSuccessAndErrorAgainstFrozenOpenApi() throws Exception {
+        var login = contract("/auth/login", "post", cookiePost("/api/v1/auth/login").contentType("application/json")
+            .content("{\"userId\":\"20240001\",\"password\":\"Demo-password1!\"}"), 202);
+        contract("/auth/login", "post", cookiePost("/api/v1/auth/login").contentType("application/json").content("{}"), 400);
+        String id = json.readTree(login.getContentAsString()).get("ticketId").asText();
+        var proof = new Cookie("__Host-crs_login", login.getCookie("__Host-crs_login").getValue());
+        contract("/tickets/{ticketId}", "get", get("/api/v1/tickets/" + id).cookie(proof), 200);
+        contract("/tickets/{ticketId}", "get", get("/api/v1/tickets/" + id), 403);
+        queue.admitWaitingUsers();
+        assertTrue(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10)));
+        contract("/tickets/{ticketId}", "get", get("/api/v1/tickets/" + id).cookie(proof), 200);
+        var exchanged = contract("/auth/login-tickets/{ticketId}/tokens", "post", cookiePost("/api/v1/auth/login-tickets/" + id + "/tokens").cookie(proof), 200);
+        contract("/auth/login-tickets/{ticketId}/tokens", "post", cookiePost("/api/v1/auth/login-tickets/" + id + "/tokens").cookie(proof), 403);
+        String access = json.readTree(exchanged.getContentAsString()).get("accessToken").asText();
+        var refresh = new Cookie("__Host-crs_refresh", exchanged.getCookie("__Host-crs_refresh").getValue());
+        var rotated = contract("/auth/refresh", "post", cookiePost("/api/v1/auth/refresh").cookie(refresh), 200);
+        contract("/auth/refresh", "post", cookiePost("/api/v1/auth/refresh"), 401);
+        contract("/admission", "post", post("/api/v1/admission").header("Authorization", "Bearer " + access), 202);
+        queue.admitWaitingUsers();
+        assertTrue(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10)));
+        contract("/admission", "post", post("/api/v1/admission").header("Authorization", "Bearer " + access), 200);
+        contract("/admission", "post", post("/api/v1/admission"), 401);
+        contract("/auth/logout", "post", cookiePost("/api/v1/auth/logout").cookie(
+            new Cookie("__Host-crs_refresh", rotated.getCookie("__Host-crs_refresh").getValue())), 204);
+        contract("/auth/logout", "post", post("/api/v1/auth/logout"), 403);
     }
 
 }

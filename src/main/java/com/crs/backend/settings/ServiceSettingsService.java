@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.databind.JsonNode;
 
 /**
  * ADM-02-01 서비스 설정(동시 처리 수 N) 조회·변경(BE-14).
@@ -104,11 +105,21 @@ public class ServiceSettingsService {
         }
     }
 
+    /**
+     * 본문의 N을 판정한다(openapi.yaml concurrencyLimit: type: integer, 1~1000 / ADM-02-01 "N 범위·정수 조건 위반 → 400 E09").
+     *   - 빠짐·null                                   → 필수 항목
+     *   - 숫자가 아님("5", true, {}, [5])·정수가 아닌 수(1.5) → 범위·정수 위반
+     *   - 정수 값의 소수 표기(20.0)는 JSON Schema의 integer처럼 정수로 받고 범위를 본다
+     */
     private static int validLimit(ServiceSettingsUpdateRequest req) {
-        if (req == null || req.concurrencyLimit() == null) {
+        JsonNode value = req == null ? null : req.concurrencyLimit();
+        if (value == null || value.isNull()) {
             throw CrsException.invalid(Source.BODY, "/concurrencyLimit", "필수 항목입니다.");
         }
-        int n = req.concurrencyLimit();
+        if (!value.isNumber() || !value.canConvertToExactIntegral() || !value.canConvertToInt()) {
+            throw CrsException.invalid(Source.BODY, "/concurrencyLimit", RANGE_MESSAGE);
+        }
+        int n = value.asInt();
         if (n < MIN_LIMIT || n > MAX_LIMIT) {
             throw CrsException.invalid(Source.BODY, "/concurrencyLimit", RANGE_MESSAGE);
         }

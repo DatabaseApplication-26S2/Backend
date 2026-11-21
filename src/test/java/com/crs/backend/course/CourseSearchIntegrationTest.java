@@ -58,6 +58,7 @@ class CourseSearchIntegrationTest {
     @Autowired MockMvc mvc;
     @Autowired AuthService auth;
     @Autowired QueueService queue;
+    @Autowired com.crs.backend.application.TicketDispatcher dispatcher;
     @Autowired RedissonClient redis;
     @Autowired UserAccountRepository users;
     @Autowired JdbcClient jdbc;
@@ -499,6 +500,7 @@ class CourseSearchIntegrationTest {
         RScoredSortedSet<String> waiting = redis.getScoredSortedSet("waiting_queue");
         when(waiting.pollFirst(anyInt())).thenReturn(List.of(receipt.ticketId()));
         queue.admitWaitingUsers();
+        org.assertj.core.api.Assertions.assertThat(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10))).isTrue();
         when(waiting.pollFirst(anyInt())).thenReturn(List.of());
         if (admitted && userId.equals(STUDENT)) jdbc.sql("UPDATE sessions SET entered_at=clock_timestamp() WHERE login_ticket_id=:id").param("id", Long.parseLong(receipt.ticketId())).update();
         return "Bearer " + auth.exchange(Long.parseLong(receipt.ticketId()), receipt.proof()).accessToken();

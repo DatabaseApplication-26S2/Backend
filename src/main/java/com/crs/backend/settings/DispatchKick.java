@@ -3,6 +3,7 @@ package com.crs.backend.settings;
 import com.crs.backend.application.TicketDispatcher;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,20 +36,29 @@ public class DispatchKick implements DisposableBean {
         this.dispatcher = dispatcher;
     }
 
-    /** 커밋이 끝난 뒤에 부른다 */
+    /**
+     * 커밋이 끝난 뒤에 부른다.
+     * 종료 중(destroy 뒤)이면 실행기가 거절한다. N은 이미 커밋됐으므로 예외를 던지지 않고(PUT은 200)
+     * pending만 되돌려 경고를 남긴다.
+     */
     public void kick() {
         if (!pending.compareAndSet(false, true)) {
             return; // 아직 시작하지 않은 실행이 있으면 그 실행이 새 N을 읽는다
         }
-        executor.execute(() -> {
+        try {
+            executor.execute(() -> {
+                pending.set(false);
+                try {
+                    int claimed = dispatcher.claimAndDispatch();
+                    log.debug("Dispatch kicked after settings change: claimed {}", claimed);
+                } catch (RuntimeException e) {
+                    log.warn("Dispatch kick failed; the scheduler will retry", e);
+                }
+            });
+        } catch (RejectedExecutionException e) {
             pending.set(false);
-            try {
-                int claimed = dispatcher.claimAndDispatch();
-                log.debug("Dispatch kicked after settings change: claimed {}", claimed);
-            } catch (RuntimeException e) {
-                log.warn("Dispatch kick failed; the scheduler will retry", e);
-            }
-        });
+            log.warn("Dispatch kick skipped: executor is shut down", e);
+        }
     }
 
     @Override

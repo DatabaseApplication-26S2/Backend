@@ -136,11 +136,15 @@ class ServiceSettingsIntegrationTest {
     void 같은_값이면_변경자와_시각을_바꾸지_않는다() {
         settings.update(ADMIN_USER, new ServiceSettingsUpdateRequest(20));
         Timestamp first = changedAt();
+        user("qsadmin2", UserRole.ADMIN);
 
-        ServiceSettingsView again = settings.update(ADMIN_USER, new ServiceSettingsUpdateRequest(20));
+        // 다른 관리자가 같은 값을 보내도 변경자는 처음 변경한 사람 그대로다
+        ServiceSettingsView again = settings.update(new CurrentUser("qsadmin2", "s", UserRole.ADMIN),
+                new ServiceSettingsUpdateRequest(20));
 
         assertThat(again.concurrencyLimit()).isEqualTo(20);
         assertThat(changedAt()).isEqualTo(first);
+        assertThat(changedBy()).isEqualTo(ADMIN);
     }
 
     @Test
@@ -163,6 +167,34 @@ class ServiceSettingsIntegrationTest {
         }
         assertThat(limit()).isEqualTo(100);
         assertThat(changedAt()).isNull();
+    }
+
+    @Test
+    void 정수가_아닌_타입의_N은_400_E09이고_N은_그대로() throws Exception {
+        String token = bearer(ADMIN);
+        for (String body : List.of("{\"concurrencyLimit\":\"5\"}", "{\"concurrencyLimit\":1.5}",
+                "{\"concurrencyLimit\":true}", "{\"concurrencyLimit\":{}}", "{\"concurrencyLimit\":[5]}")) {
+            mvc.perform(put("/api/v1/admin/settings").header("Authorization", token)
+                            .contentType("application/json").content(body))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value("E09"))
+                    .andExpect(jsonPath("$.violations[0].source").value("BODY"))
+                    .andExpect(jsonPath("$.violations[0].field").value("/concurrencyLimit"));
+        }
+        assertThat(limit()).isEqualTo(100);
+        assertThat(changedAt()).isNull();
+        assertThat(changedBy()).isNull();
+    }
+
+    @Test
+    void 정수값인_소수_표기_20_0은_20으로_허용한다() throws Exception {
+        mvc.perform(put("/api/v1/admin/settings").header("Authorization", bearer(ADMIN))
+                        .contentType("application/json").content("{\"concurrencyLimit\":20.0}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.concurrencyLimit").value(20))
+                .andExpect(jsonPath("$.lastChangedBy").value(ADMIN));
+
+        assertThat(limit()).isEqualTo(20); // 다음 테스트는 @BeforeEach에서 100으로 되돌린다
     }
 
     @Test
@@ -208,11 +240,13 @@ class ServiceSettingsIntegrationTest {
         // 처리 중 3 → 2 → 1: 모두 N(1) 이상이라 신규 claim 0
         for (int i = 0; i < 3; i++) {
             dispatcher.claimAndDispatch();
+            assertThat(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10))).isTrue();
             assertThat(statusOf(waiting)).isEqualTo("WAITING");
             finish(processing.get(i));
         }
         // 처리 중 0 < N: 이제 claim된다
         dispatcher.claimAndDispatch();
+        assertThat(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10))).isTrue();
         assertThat(statusOf(waiting)).isNotEqualTo("WAITING");
     }
 
@@ -224,6 +258,10 @@ class ServiceSettingsIntegrationTest {
 
     private int limit() {
         return jdbc.sql("SELECT concurrency_limit FROM service_settings").query(Integer.class).single();
+    }
+
+    private String changedBy() {
+        return jdbc.sql("SELECT last_changed_by FROM service_settings").query(String.class).optional().orElse(null);
     }
 
     private Timestamp changedAt() {
@@ -302,6 +340,7 @@ class ServiceSettingsIntegrationTest {
     private String bearer(String userId) {
         AuthService.LoginReceipt receipt = auth.login(userId, PASSWORD.toCharArray());
         queue.admitWaitingUsers();
+        assertThat(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10))).isTrue();
         return "Bearer " + auth.exchange(Long.parseLong(receipt.ticketId()), receipt.proof()).accessToken();
     }
 }
