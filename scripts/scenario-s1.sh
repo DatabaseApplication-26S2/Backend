@@ -16,15 +16,21 @@ PSQL=(docker exec "$DB_CONTAINER" psql -U crs -d crs -X -q -P pager=off)
 
 echo "S1: 학생 $COUNT명 동시 로그인 ($BASE, N은 서버 설정값)"
 require_server
+"${PSQL[@]}" -t -A -c "SELECT 1" > /dev/null 2>&1 || { echo "DB 컨테이너 $DB_CONTAINER에 psql로 접속할 수 없다(DB_CONTAINER 확인)"; exit 1; }
 "${PSQL[@]}" -c "SELECT concurrency_limit AS n FROM service_settings"
+# 이번 실행에서 접수한 티켓만 증거로 고르기 위해 접수 전 마지막 번호를 기억한다
+BEFORE="$("${PSQL[@]}" -t -A -c "SELECT COALESCE(max(ticket_id), 0) FROM tickets")"
 
 # PROCESSING 수를 0.05초마다 관측해 최댓값을 기록한다(백그라운드)
 OBS="$TMP/obs"; : > "$OBS"
-( while [ ! -f "$TMP/stop" ]; do
+( while [ -d "$TMP" ] && [ ! -f "$TMP/stop" ]; do
     "${PSQL[@]}" -t -A -c "SELECT count(*) FROM tickets WHERE status_cd='PROCESSING'" >> "$OBS" 2>/dev/null
     sleep 0.05
   done ) &
 OBS_PID=$!
+# 중간에 끝내도(Ctrl-C 등) 관측 루프가 남지 않게 한다
+trap 'kill "$OBS_PID" 2>/dev/null; rm -rf "$TMP"' EXIT
+trap 'exit 130' INT TERM
 
 # 동시에 접수: 사용자마다 별도 파일로 헤더(소유 증명 쿠키)와 본문을 받는다
 for i in $(seq 0 $((COUNT - 1))); do
@@ -54,13 +60,13 @@ touch "$TMP/stop"; wait "$OBS_PID" 2>/dev/null
 max="$(sort -n "$OBS" | tail -1)"
 
 echo
-echo "== 로그인 티켓(번호 순). claim 순서 = processing_started_at 순서여야 한다"
+echo "== 이번 실행의 로그인 티켓(번호 순, 번호 $BEFORE 초과). claim 순서 = processing_started_at 순서여야 한다"
 "${PSQL[@]}" -c "SELECT ticket_id, status_cd, result_cd, ticket_issued_at::time(3) AS issued,
        processing_started_at::time(3) AS started, processing_finished_at::time(3) AS finished,
        rank() OVER (ORDER BY processing_started_at, ticket_id) AS claim_order
-  FROM tickets WHERE request_type='LOGIN' ORDER BY ticket_id DESC LIMIT $COUNT"
+  FROM tickets WHERE request_type='LOGIN' AND ticket_id > $BEFORE ORDER BY ticket_id"
 echo "== 처리 구간이 겹친 최대 수(기록 기준, N 이하여야 한다)"
-"${PSQL[@]}" -c "WITH t AS (SELECT * FROM (SELECT * FROM tickets WHERE request_type='LOGIN' ORDER BY ticket_id DESC LIMIT $COUNT) x)
+"${PSQL[@]}" -c "WITH t AS (SELECT * FROM tickets WHERE request_type='LOGIN' AND ticket_id > $BEFORE)
   SELECT max(c) AS max_overlap FROM (
     SELECT (SELECT count(*) FROM t b WHERE b.processing_started_at <= a.processing_started_at
                                     AND b.processing_finished_at > a.processing_started_at) AS c FROM t a) y"

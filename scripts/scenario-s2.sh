@@ -9,6 +9,9 @@
 # DB 증거는 docker exec로 DB 컨테이너의 psql에서 출력한다. 기본은 backend-practice/compose.yaml의 crs-db다.
 #   루트 compose.yaml로 띄웠으면: BASE=http://localhost/api/v1 ORIGIN=http://localhost DB_CONTAINER=crs-db-1 bash scripts/scenario-s2.sh
 # =====================================================================
+if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+  echo "bash 4 이상이 필요하다(연관 배열). macOS 기본 bash는 3.2이므로 brew install bash 뒤 그 bash로 실행한다"; exit 1
+fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/smoke-lib.sh"
 COUNT="${COUNT:-30}"; FIRST="${FIRST:-20260021}"; COURSE="${COURSE:-DEMO01}"
@@ -17,6 +20,7 @@ PSQL=(docker exec "$DB_CONTAINER" psql -U crs -d crs -X -q -P pager=off)
 
 echo "S2: 학생 $COUNT명이 $COURSE에 동시 신청 ($BASE)"
 require_server
+"${PSQL[@]}" -t -A -c "SELECT 1" > /dev/null 2>&1 || { echo "DB 컨테이너 $DB_CONTAINER에 psql로 접속할 수 없다(DB_CONTAINER 확인)"; exit 1; }
 
 echo "1) 로그인·입장 준비"
 declare -A TOKEN
@@ -32,17 +36,26 @@ echo "  준비된 학생 ${#TOKEN[@]}명"
 
 echo "2) 동시 신청"
 for u in "${!TOKEN[@]}"; do
-  curl -s -o "$TMP/enr$u" -X POST "$BASE/me/enrollments" \
+  curl -s -o "$TMP/enr$u" -w '%{http_code}' -X POST "$BASE/me/enrollments" \
        -H "Origin: $ORIGIN" -H "X-CSRF-Protection: 1" -H "Content-Type: application/json" \
-       -H "Authorization: Bearer ${TOKEN[$u]}" --data-binary "{\"courseCode\":\"$COURSE\"}" &
+       -H "Authorization: Bearer ${TOKEN[$u]}" --data-binary "{\"courseCode\":\"$COURSE\"}" > "$TMP/st$u" &
 done
 wait
 
 echo "3) 결과 대기"
 declare -A RESULT
 for u in "${!TOKEN[@]}"; do
+  st="$(cat "$TMP/st$u" 2>/dev/null)"
+  if [ "$st" != 202 ]; then
+    RESULT["접수 HTTP ${st:-없음}"]=$(( ${RESULT["접수 HTTP ${st:-없음}"]:-0} + 1 ))
+    continue
+  fi
   id="$(sed -n 's/.*"ticketId":"\{0,1\}\([0-9]*\).*/\1/p' "$TMP/enr$u")"
-  if [ -n "$id" ] && wait_ticket "$id" -H "Authorization: Bearer ${TOKEN[$u]}"; then
+  done_=0
+  for try in 1 2 3; do   # wait_ticket 한 번은 최대 20초다. 느린 환경을 위해 최대 60초까지 기다린다
+    if [ -n "$id" ] && wait_ticket "$id" -H "Authorization: Bearer ${TOKEN[$u]}"; then done_=1; break; fi
+  done
+  if [ "$done_" = 1 ]; then
     code="$(printf '%s' "$BODY" | sed -n 's/.*"result":{[^}]*"code":"\([A-Z0-9]*\)".*/\1/p')"
     RESULT[$code]=$(( ${RESULT[$code]:-0} + 1 ))
   else
