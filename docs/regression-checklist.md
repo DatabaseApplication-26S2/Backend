@@ -67,10 +67,12 @@ bash scripts/smoke-all.sh
 | 19 | `GET /admin/settings` | BE-14(팀원3) | 200 N·슬롯·대기 수 | 교수 → 403 E02 | ✅ 통과 |
 | 20 | `PUT /admin/settings` | BE-14(팀원3) | 200, 새 N·변경자 기록 | 범위 밖(0) → 400 E09 | ✅ 통과 |
 
-**실행 기록:** 2026-11-20 김재섭, feature/auth-login (main 3869cde 통합 후 수정본). Java 21 / PostgreSQL 17 / Redis 7 별도 컨테이너 / demo 프로파일 / 포트 18080. 위 V900 환경 변수로 smoke-all.sh 실행: **45/45 통과, 20개 연산 성공·대표 오류 확인**.
+**실행 기록:** 2026-11-21 김민준, feature/auth-login에 main 6a05e50(PR #14 과목별 동시 처리 포함)을 병합하고 리뷰 지적을 고친 본. Java 21 / PostgreSQL 17 / Redis 7 / demo 프로파일, 일회용 Docker Compose 스택(포트 18084). 위 V900 환경 변수로 smoke-all.sh 실행: **45/45 통과, 20개 연산 성공·대표 오류 확인**.
 
-`./gradlew.bat build redisTest`: 일반 테스트 129개 + 실제 Redis 테스트 7개, 실패·오류·건너뜀 0건.
-시연 스크립트: 동시 로그인 5 OK, 동시 신청 30건은 3 OK / 27 E07, SQL INV-2 불일치 0행.
+`./gradlew build redisTest`: 일반 테스트 161개 + 실제 Redis 테스트 10개, 실패·오류·건너뜀 0건. Redis 테스트는 3회 연속 통과.
+시연 스크립트(PowerShell 7.4): 동시 로그인 5 OK. 동시 신청 30건은 3 OK(번호가 가장 작은 3건) / 27 E07이며, 첫 접수부터 마지막 판정까지 15.09초 걸렸다. SQL INV-2 불일치 0행.
+
+이전 기록: 2026-11-20 김재섭, feature/auth-login(main 3869cde 통합본)에서 smoke 45/45, 일반 테스트 129개 + Redis 테스트 7개 통과.
 
 ## 2. 계약 적합성(BE-16, 팀원2)
 

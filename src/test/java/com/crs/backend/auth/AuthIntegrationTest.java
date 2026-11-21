@@ -40,8 +40,6 @@ class AuthIntegrationTest {
     @Autowired com.crs.backend.application.TicketDispatcher dispatcher;
     @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
     @Autowired org.springframework.transaction.support.TransactionTemplate tx;
-    @Autowired com.crs.backend.application.TicketReclaimer reclaimer;
-    @Autowired com.crs.backend.application.handler.LoginTicketHandler loginHandler;
     @org.springframework.test.context.bean.override.mockito.MockitoSpyBean TokenCodec codec;
     @jakarta.persistence.PersistenceContext jakarta.persistence.EntityManager em;
 
@@ -259,7 +257,7 @@ class AuthIntegrationTest {
     @Test void roleChangeHidesStudentAdmissionInTokenResponse() throws Exception {
         var token = issued(); var user = auth.authenticate(token.accessToken());
         auth.requestAdmission(user.userId(), user.sessionId()); queue.admitWaitingUsers();
-        assertTrue(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10))); // PR #14: 핸들러가 비동기로 돈다
+        assertTrue(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10)));
         assertTrue(auth.isAdmitted(user.userId(), user.sessionId()));
         jdbc.update("UPDATE users SET role_cd='PROFESSOR' WHERE user_id=?", user.userId());
         var response = mvc.perform(cookiePost("/api/v1/auth/refresh").cookie(new Cookie("__Host-crs_refresh", token.refreshToken())))
@@ -267,38 +265,6 @@ class AuthIntegrationTest {
             .andExpect(jsonPath("$.session.admittedAt").value(org.hamcrest.Matchers.nullValue())).andReturn().getResponse();
         OpenApiResponses.verify("/auth/refresh", "post", response);
         assertNotNull(jdbc.queryForObject("SELECT entered_at FROM sessions WHERE session_id=CAST(? AS uuid)", java.sql.Timestamp.class, user.sessionId()));
-    }
-    @Test void recoveredLoginWithLostMemoryFinishesE01() {
-        var receipt = login("Demo-password1!");
-        WaitingTicket old = expireClaim(receipt);
-        credentials.discard(old.getAnonContextId());
-        assertEquals(1, reclaimer.reclaimExpired());
-        queue.admitWaitingUsers();
-        assertTrue(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10))); // PR #14: 핸들러가 비동기로 돈다
-        assertEquals(TicketResultCode.E01, tickets.findById(old.getTicketId()).orElseThrow().getResultCode());
-        assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM sessions WHERE login_ticket_id=?", Integer.class, old.getTicketId()));
-    }
-    private WaitingTicket expireClaim(AuthService.LoginReceipt receipt) {
-        return tx.execute(status -> {
-            var ticket = em.find(WaitingTicket.class, Long.parseLong(receipt.ticketId()));
-            ticket.markProcessing(java.time.Instant.now().minusSeconds(60)); em.flush();
-            return ticket;
-        });
-    }
-    @Test void recoveredLoginRejectsLateOldWorkerWithoutConsumingCredentials() {
-        var receipt = login("Demo-password1!");
-        WaitingTicket old = expireClaim(receipt);
-        int generation = old.getGenerationNo();
-        assertEquals(1, reclaimer.reclaimExpired());
-        WaitingTicket current = tx.execute(status -> {
-            var ticket = em.find(WaitingTicket.class, old.getTicketId());
-            ticket.markProcessing(jdbc.queryForObject("SELECT clock_timestamp()", java.sql.Timestamp.class).toInstant()); em.flush(); return ticket;
-        });
-        loginHandler.handle(old, generation);
-        assertEquals(TicketStatus.PROCESSING, tickets.findById(old.getTicketId()).orElseThrow().getStatus());
-        loginHandler.handle(current, current.getGenerationNo());
-        assertEquals(TicketResultCode.OK, tickets.findById(old.getTicketId()).orElseThrow().getResultCode());
-        assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM sessions WHERE login_ticket_id=?", Integer.class, old.getTicketId()));
     }
     private org.springframework.mock.web.MockHttpServletResponse contract(String path, String method,
             org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder request, int status) throws Exception {
@@ -314,7 +280,7 @@ class AuthIntegrationTest {
         contract("/tickets/{ticketId}", "get", get("/api/v1/tickets/" + id).cookie(proof), 200);
         contract("/tickets/{ticketId}", "get", get("/api/v1/tickets/" + id), 403);
         queue.admitWaitingUsers();
-        assertTrue(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10))); // PR #14: 핸들러가 비동기로 돈다
+        assertTrue(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10)));
         contract("/tickets/{ticketId}", "get", get("/api/v1/tickets/" + id).cookie(proof), 200);
         var exchanged = contract("/auth/login-tickets/{ticketId}/tokens", "post", cookiePost("/api/v1/auth/login-tickets/" + id + "/tokens").cookie(proof), 200);
         contract("/auth/login-tickets/{ticketId}/tokens", "post", cookiePost("/api/v1/auth/login-tickets/" + id + "/tokens").cookie(proof), 403);
@@ -324,7 +290,7 @@ class AuthIntegrationTest {
         contract("/auth/refresh", "post", cookiePost("/api/v1/auth/refresh"), 401);
         contract("/admission", "post", post("/api/v1/admission").header("Authorization", "Bearer " + access), 202);
         queue.admitWaitingUsers();
-        assertTrue(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10))); // PR #14: 핸들러가 비동기로 돈다
+        assertTrue(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10)));
         contract("/admission", "post", post("/api/v1/admission").header("Authorization", "Bearer " + access), 200);
         contract("/admission", "post", post("/api/v1/admission"), 401);
         contract("/auth/logout", "post", cookiePost("/api/v1/auth/logout").cookie(

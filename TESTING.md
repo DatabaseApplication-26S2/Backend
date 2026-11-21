@@ -66,11 +66,15 @@ SessionGuard.lock(sessionId) returns a scalar Snapshot under FOR NO KEY UPDATE a
 existing transaction. requireStudent(expectedUserId) checks the original session, current role,
 revocation and DB-clock expiry. Other queue handlers can reuse this guard.
 
-The branch now incorporates main 3869cde (2026-11-20), including the common TicketIntake,
-TicketDispatcher, all four handlers, and BE-17 lease/recovery code. Redis is an ordering mirror;
-DB WAITING rows remain authoritative. RedisWaitingOrderReconciler clears/reloads the mirror on
-startup and reconciles every 10 seconds, reading Redis before DB and leaving newly published
-members outside its observed snapshot untouched. A failed Redis pass is retried next period.
+The branch now incorporates main 6a05e50 (2026-11-21), including the common TicketIntake,
+TicketDispatcher, all four handlers, BE-17 lease/recovery code, and per-course concurrent ticket
+workers (PR #14). claimAndDispatch()/admitWaitingUsers() return once the claim commits; tests
+must call TicketDispatcher.awaitIdle(Duration) before asserting handler results.
+Redis is an ordering mirror; DB WAITING rows remain authoritative. RedisWaitingOrderReconciler
+clears/reloads the mirror on startup and reconciles every 10 seconds: it reads Redis (with scores)
+before DB, adds only missing or wrong-score WAITING ids in one batch, removes members that are no
+longer WAITING in one batch, and leaves members published after its Redis read untouched.
+A failed Redis pass is retried next period. The scheduling pool has one thread per @Scheduled task (5).
 Use AuthService.INTAKE_LOCK (20260001) for shared intake serialization, and preserve the
 generation/worker check before consuming login credentials.
 
@@ -88,11 +92,17 @@ smoke-all.sh covers their functional success/error cases but is not a schema val
 PROVENANCE.txt records the source. The previous reconstructed schema has been removed.
 
 Run ./gradlew.bat build redisTest with Docker running for PostgreSQL and Redis integration tests.
-RedisReconciliationIntegrationTest covers late ZADD, missing publication, wrong scores, key deletion,
-startup rebuild, and a paused/unavailable Redis while DB intake/processing/polling continue.
+RedisReconciliationIntegrationTest has one test per plan §7 T10 case: (a) claim order follows ticket
+numbers regardless of Redis order or missing members, (b) one periodic pass restores an emptied key
+and the tickets then finish, (c) a startup rebuild after key deletion, (d) Redis paused while DB
+intake/processing/polling continue, (e) queuePosition ignores Redis contents. It also covers late
+ZADD after claim, wrong scores and unknown members removed by a startup rebuild.
 AuthIntegrationTest covers rollback at the fractional-second expiry boundary, simultaneous HTTP
-refresh (one 200, one 401), current-role projection, and old-generation/missing-memory LOGIN recovery.
-See docs/demo-auth-rehearsal.md for S1/S2 scripts, evidence SQL, and interactive S5 lock instructions.
+refresh (one 200, one 401) and current-role projection. Old-generation and missing-memory LOGIN
+recovery live in concurrency/LoginRecoveryIntegrationTest. OpenApiResponsesTest proves
+OpenApiResponses.verify rejects unknown operations, undeclared statuses and content types, missing
+required headers, schema violations and a body on a no-content response.
+See docs/demo-auth-rehearsal.md for S1/S2 scripts (PowerShell 7+), evidence SQL, and interactive S5 lock instructions.
 
 Cookie operations require Origin matching APP_FRONTEND_ORIGIN (default http://localhost:5173)
 and X-CSRF-Protection: 1. Frontend requests need credentials: 'include'.

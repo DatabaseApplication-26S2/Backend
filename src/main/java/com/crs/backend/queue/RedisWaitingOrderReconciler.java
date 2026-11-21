@@ -1,9 +1,11 @@
 package com.crs.backend.queue;
 
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import org.redisson.api.RScoredSortedSet;
 import org.redisson.api.RedissonClient;
+import org.redisson.client.protocol.ScoredEntry;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -39,17 +41,19 @@ public class RedisWaitingOrderReconciler {
             RScoredSortedSet<String> copy = redis.getScoredSortedSet(properties.getWaitingKey());
             if (rebuild) copy.delete();
             // Redis snapshot must precede the DB snapshot. Do not delete members published after this read.
-            var observed = new HashSet<>(copy.readAll());
-            List<Long> waiting = jdbc.queryForList("SELECT ticket_id FROM tickets WHERE status_cd='WAITING' ORDER BY ticket_id", Long.class);
-            var expected = new HashSet<String>();
+            Map<String, Double> observed = new HashMap<>();
+            for (ScoredEntry<String> entry : copy.entryRange(0, -1)) observed.put(entry.getValue(), entry.getScore());
+            List<Long> waiting = jdbc.queryForList("SELECT ticket_id FROM tickets WHERE status_cd='WAITING'", Long.class);
+            Map<String, Double> upserts = new HashMap<>();
             for (long id : waiting) {
                 String member = Long.toString(id);
-                expected.add(member);
+                Double score = observed.remove(member);
                 // Refresh the score too: late/wrong-score writes are harmless after the next pass.
-                copy.add((double) id, member);
+                if (score == null || score.doubleValue() != id) upserts.put(member, (double) id);
             }
-            observed.removeAll(expected);
-            for (String stale : observed) copy.remove(stale);
+            // What remains was in the Redis snapshot but is no longer WAITING in the DB.
+            if (!upserts.isEmpty()) copy.addAll(upserts);
+            if (!observed.isEmpty()) copy.removeAll(observed.keySet());
         } catch (RuntimeException ex) {
             LoggerFactory.getLogger(getClass()).warn("Waiting-order reconciliation failed ({}); will retry", ex.getClass().getSimpleName());
         }

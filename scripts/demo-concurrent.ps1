@@ -1,4 +1,6 @@
 #requires -Version 7.0
+# Requires PowerShell 7+ for ForEach-Object -Parallel. Install: Windows `winget install Microsoft.PowerShell`,
+# macOS `brew install powershell`. Run with `pwsh ./scripts/demo-concurrent.ps1 ...`.
 [CmdletBinding()]
 param(
     [ValidateSet('Login','Enrollment')][string]$Scenario = 'Login',
@@ -56,6 +58,7 @@ $admin = Login 'A1001'
 $settings = Request GET '/admin/settings' $null $admin.Access
 Expect $settings 200
 $oldN = $settings.Json.concurrencyLimit
+$scenarioFailed = $true
 try {
     Expect (Request PUT '/admin/settings' @{concurrencyLimit=2} $admin.Access) 200
     if ($Scenario -eq 'Login') {
@@ -101,6 +104,13 @@ try {
     }
     $results | Sort-Object {[long]$_.TicketId} | Format-Table UserId,TicketId,Code
     Write-Host "$Scenario passed with N=2."
+    $scenarioFailed = $false
 } finally {
-    Expect (Request PUT '/admin/settings' @{concurrencyLimit=$oldN} $admin.Access) 200
+    # A failed restore must not mask the scenario's own error; it still fails an otherwise passing run.
+    try {
+        Expect (Request PUT '/admin/settings' @{concurrencyLimit=$oldN} $admin.Access) 200
+    } catch {
+        $message = "Could not restore concurrencyLimit=${oldN}: $($_.Exception.Message)"
+        if ($scenarioFailed) { Write-Warning $message } else { throw $message }
+    }
 }
