@@ -498,8 +498,19 @@ class SchemaConstraintIntegrationTest {
         }
 
         @Test
-        @DisplayName("course_code는 COLLATE C라 대소문자를 구분해 수락")
-        void 코드_대소문자_구분() throws SQLException {
+        @DisplayName("course_code는 COLLATE C라 정렬이 ASCII 바이트 순서(숫자 < 대문자 < 소문자)")
+        void 코드_COLLATE_C_정렬() throws SQLException {
+            assertAccepted(courseRow().with("course_code", "a01"));
+            assertAccepted(courseRow().with("course_code", "Z01"));
+            assertAccepted(courseRow().with("course_code", "0A1"));
+            assertEquals("0A1,Z01,a01", scalar("""
+                SELECT string_agg(course_code, ',' ORDER BY course_code)
+                  FROM courses WHERE course_code IN ('0A1', 'Z01', 'a01')"""));
+        }
+
+        @Test
+        @DisplayName("course_code는 대소문자만 다른 코드(CS101 / cs101)를 서로 다른 값으로 수락")
+        void 코드_대소문자_다른_값_수락() throws SQLException {
             assertAccepted(courseRow().with("course_code", "cs101"));
         }
 
@@ -811,9 +822,9 @@ class SchemaConstraintIntegrationTest {
         }
 
         @Test
-        @DisplayName("ticket_id가 1이면 수락, 최댓값도 수락")
+        @DisplayName("ticket_id 최솟값 쪽 양수(5, 기준 행이 1~4·6을 씀)와 bigint 최댓값은 수락")
         void 번호_경계_수락() throws SQLException {
-            assertAccepted(enrollmentTicket().with("ticket_id", 100L));
+            assertAccepted(enrollmentTicket().with("ticket_id", 5L));
             assertAccepted(loginTicket().with("ticket_id", Long.MAX_VALUE));
         }
 
@@ -1151,11 +1162,14 @@ class SchemaConstraintIntegrationTest {
         }
 
         @Test
-        @DisplayName("INV-5: PROCESSING 티켓이 있는 요청자의 새 미완결 티켓도 거절(반대 방향 포함)")
+        @DisplayName("INV-5: PROCESSING 티켓이 있는 요청자의 새 미완결 티켓도 거절, 반대로 미완결이 있을 때 PROCESSING도 거절")
         void 부분유일_PROCESSING() throws SQLException {
             assertAccepted(processing(enrollmentTicket()));
             assertRejected(UNIQUE, enrollmentTicket().with("ticket_id", 12L));
             assertRejected(UNIQUE, enrollmentTicket().with("ticket_id", 13L).with("status_cd", "RECEIVED"));
+            // 반대 방향: WAITING이 먼저 있는 요청자(stu01)에게 PROCESSING 티켓을 넣는다
+            assertAccepted(enrollmentTicket().with("ticket_id", 14L).with("requester_user_id", "stu01"));
+            assertRejected(UNIQUE, processing(enrollmentTicket()).with("ticket_id", 15L).with("requester_user_id", "stu01"));
         }
 
         @Test

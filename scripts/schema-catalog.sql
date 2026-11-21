@@ -1,8 +1,9 @@
 -- X-02 테이블 기술서 추출 SQL (백엔드 계획 3.10). 읽기 전용이다.
 -- 빈 PostgreSQL 17에 V1__schema.sql을 적용한 DB에서 실행해 X-08 문서(논리·물리 데이터 모델, 테이블 기술서)의
--- 컬럼·제약·인덱스·시퀀스 값을 뽑는다. Flyway 이력 테이블은 제외한다.
+-- 컬럼·제약·인덱스·시퀀스 값을 뽑는다. Flyway 이력 테이블은 제외한다. 제약 정의와 부분 인덱스 조건까지 얻으려고
+-- information_schema 대신 pg_catalog만 조회한다.
 --   psql -X -v ON_ERROR_STOP=1 -f scripts/schema-catalog.sql             # 표 형식
---   psql -X -v ON_ERROR_STOP=1 --csv -f scripts/schema-catalog.sql       # 문서 작성용 CSV
+--   psql -X -v ON_ERROR_STOP=1 --csv -f scripts/schema-catalog.sql       # 문서 작성용 CSV. "== n." 줄이 결과 묶음을 나눈다
 \set tables '''{users,courses,enrollments,tickets,service_settings,sessions,refresh_tokens}'''
 
 \echo '== 1. 테이블별 컬럼 수'
@@ -51,7 +52,8 @@ SELECT c.relname AS table_name,
 SELECT t.relname AS table_name,
        i.relname AS index_name,
        ix.indisunique AS is_unique,
-       EXISTS (SELECT 1 FROM pg_constraint con WHERE con.conindid = i.oid) AS constraint_backed,
+       EXISTS (SELECT 1 FROM pg_constraint con
+                WHERE con.conindid = i.oid AND con.contype IN ('p', 'u', 'x')) AS constraint_backed,
        pg_get_expr(ix.indpred, ix.indrelid) AS partial_predicate,
        pg_get_indexdef(i.oid) AS definition
   FROM pg_index ix
@@ -108,6 +110,7 @@ SELECT (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relname
        (SELECT count(*) FROM pg_index ix JOIN pg_class t ON t.oid = ix.indrelid
           JOIN pg_namespace n ON n.oid = t.relnamespace
          WHERE n.nspname = 'public' AND t.relname = ANY (:tables::text[])
-           AND NOT EXISTS (SELECT 1 FROM pg_constraint con WHERE con.conindid = ix.indexrelid)) AS standalone_indexes,
+           AND NOT EXISTS (SELECT 1 FROM pg_constraint con
+                            WHERE con.conindid = ix.indexrelid AND con.contype IN ('p', 'u', 'x'))) AS standalone_indexes,
        (SELECT count(*) FROM pg_sequence sq JOIN pg_class s ON s.oid = sq.seqrelid
           JOIN pg_namespace n ON n.oid = s.relnamespace WHERE n.nspname = 'public') AS sequences;
