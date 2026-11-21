@@ -259,6 +259,7 @@ class AuthIntegrationTest {
     @Test void roleChangeHidesStudentAdmissionInTokenResponse() throws Exception {
         var token = issued(); var user = auth.authenticate(token.accessToken());
         auth.requestAdmission(user.userId(), user.sessionId()); queue.admitWaitingUsers();
+        assertTrue(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10))); // PR #14: 핸들러가 비동기로 돈다
         assertTrue(auth.isAdmitted(user.userId(), user.sessionId()));
         jdbc.update("UPDATE users SET role_cd='PROFESSOR' WHERE user_id=?", user.userId());
         var response = mvc.perform(cookiePost("/api/v1/auth/refresh").cookie(new Cookie("__Host-crs_refresh", token.refreshToken())))
@@ -273,6 +274,7 @@ class AuthIntegrationTest {
         credentials.discard(old.getAnonContextId());
         assertEquals(1, reclaimer.reclaimExpired());
         queue.admitWaitingUsers();
+        assertTrue(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10))); // PR #14: 핸들러가 비동기로 돈다
         assertEquals(TicketResultCode.E01, tickets.findById(old.getTicketId()).orElseThrow().getResultCode());
         assertEquals(0, jdbc.queryForObject("SELECT count(*) FROM sessions WHERE login_ticket_id=?", Integer.class, old.getTicketId()));
     }
@@ -312,6 +314,7 @@ class AuthIntegrationTest {
         contract("/tickets/{ticketId}", "get", get("/api/v1/tickets/" + id).cookie(proof), 200);
         contract("/tickets/{ticketId}", "get", get("/api/v1/tickets/" + id), 403);
         queue.admitWaitingUsers();
+        assertTrue(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10))); // PR #14: 핸들러가 비동기로 돈다
         contract("/tickets/{ticketId}", "get", get("/api/v1/tickets/" + id).cookie(proof), 200);
         var exchanged = contract("/auth/login-tickets/{ticketId}/tokens", "post", cookiePost("/api/v1/auth/login-tickets/" + id + "/tokens").cookie(proof), 200);
         contract("/auth/login-tickets/{ticketId}/tokens", "post", cookiePost("/api/v1/auth/login-tickets/" + id + "/tokens").cookie(proof), 403);
@@ -321,6 +324,7 @@ class AuthIntegrationTest {
         contract("/auth/refresh", "post", cookiePost("/api/v1/auth/refresh"), 401);
         contract("/admission", "post", post("/api/v1/admission").header("Authorization", "Bearer " + access), 202);
         queue.admitWaitingUsers();
+        assertTrue(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10))); // PR #14: 핸들러가 비동기로 돈다
         contract("/admission", "post", post("/api/v1/admission").header("Authorization", "Bearer " + access), 200);
         contract("/admission", "post", post("/api/v1/admission"), 401);
         contract("/auth/logout", "post", cookiePost("/api/v1/auth/logout").cookie(
