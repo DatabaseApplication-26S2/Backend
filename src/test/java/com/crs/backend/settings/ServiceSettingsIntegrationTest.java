@@ -240,11 +240,13 @@ class ServiceSettingsIntegrationTest {
         // 처리 중 3 → 2 → 1: 모두 N(1) 이상이라 신규 claim 0
         for (int i = 0; i < 3; i++) {
             dispatcher.claimAndDispatch();
+            assertThat(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10))).isTrue();
             assertThat(statusOf(waiting)).isEqualTo("WAITING");
             finish(processing.get(i));
         }
         // 처리 중 0 < N: 이제 claim된다
         dispatcher.claimAndDispatch();
+        assertThat(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10))).isTrue();
         assertThat(statusOf(waiting)).isNotEqualTo("WAITING");
     }
 
@@ -338,6 +340,7 @@ class ServiceSettingsIntegrationTest {
     private String bearer(String userId) {
         AuthService.LoginReceipt receipt = auth.login(userId, PASSWORD.toCharArray());
         queue.admitWaitingUsers();
+        assertThat(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10))).isTrue();
         return "Bearer " + auth.exchange(Long.parseLong(receipt.ticketId()), receipt.proof()).accessToken();
     }
 }

@@ -8,6 +8,8 @@ spring:
     username: crs
     password: crs
     hikari:
+      # 티켓 워커(queue.worker-concurrency)가 연결을 하나씩 쥐어도 접수·claim·스케줄 작업이 연결을 얻도록 워커 상한보다 크게 둔다(구현계획 4절 (6))
+      maximum-pool-size: 32
       data-source-properties:
         # uuid 컬럼(course_inst_id, session_id 등)을 Java String으로 바인딩할 수 있게 한다
         stringtype: unspecified
@@ -28,7 +30,7 @@ spring:
   task:
     scheduling:
       pool:
-        # 기본 1개 스레드면 디스패처가 핸들러를 도는 동안 리스 연장·회수가 멈춘다(구현계획 4절 (8)).
+        # 기본 1개 스레드면 @Scheduled 작업 하나가 늦어질 때(예: 회계 잠금 대기) 리스 연장·회수도 함께 멈춘다(구현계획 4절 (8)).
         # @Scheduled 작업 4개(디스패처·회수·리스 연장·로그인 자격 증명 청소)가 서로 기다리지 않게 한다
         size: 4
 
@@ -46,6 +48,10 @@ queue:
   admit-batch-size: 50
   active-ttl-minutes: 5
   scheduler-fixed-delay-ms: 1000
+  # 동시에 실행하는 티켓 핸들러 수(구현계획 4절 (6)). 한 배치의 과목별 묶음(과목 없는 티켓은 하나씩)이 가상 스레드 하나에서 돌고,
+  # 핸들러는 트랜잭션 동안 DB 연결 1개를 쥔다.
+  # spring.datasource.hikari.maximum-pool-size(32)보다 작게 둔다
+  worker-concurrency: 16
   # 3단계 재투입(구현계획 4절 (8), D-07 확정): 리스 30초·한도 3회는 WaitingTicket 상수, 점검 주기 10초는 아래 값
   reclaim-fixed-delay-ms: 10000
   lease-renew-fixed-delay-ms: 10000

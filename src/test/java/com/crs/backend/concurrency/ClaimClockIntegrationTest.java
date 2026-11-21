@@ -225,6 +225,7 @@ class ClaimClockIntegrationTest {
             }
             courseLock.commit();
             assertThat(first.get(30, TimeUnit.SECONDS) + second.get(30, TimeUnit.SECONDS)).isEqualTo(2);
+            assertThat(dispatcher.awaitIdle(java.time.Duration.ofSeconds(30))).as("workers finish after the course lock is released").isTrue();
         } finally {
             pool.shutdownNow();
             assertThat(pool.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
