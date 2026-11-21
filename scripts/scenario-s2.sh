@@ -6,11 +6,14 @@
 #   bash scripts/scenario-s2.sh                 # 학생 20260021~20260050, 과목 DEMO01(정원 3)
 #   COUNT=29 bash scripts/scenario-s2.sh        # 브라우저에서 1명을 같이 신청할 때
 # 1) 학생마다 로그인·입장을 미리 끝내고 2) 신청 요청만 한꺼번에 보낸다.
+# DB 증거는 docker exec로 DB 컨테이너의 psql에서 출력한다. 기본은 backend-practice/compose.yaml의 crs-db다.
+#   루트 compose.yaml로 띄웠으면: BASE=http://localhost/api/v1 ORIGIN=http://localhost DB_CONTAINER=crs-db-1 bash scripts/scenario-s2.sh
 # =====================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/smoke-lib.sh"
 COUNT="${COUNT:-30}"; FIRST="${FIRST:-20260021}"; COURSE="${COURSE:-DEMO01}"
-PSQL=(docker exec crs-db psql -U crs -d crs -X -q -P pager=off)
+DB_CONTAINER="${DB_CONTAINER:-crs-db}"
+PSQL=(docker exec "$DB_CONTAINER" psql -U crs -d crs -X -q -P pager=off)
 
 echo "S2: 학생 $COUNT명이 $COURSE에 동시 신청 ($BASE)"
 require_server

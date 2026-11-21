@@ -5,12 +5,14 @@
 # 준비: reset-demo.sql로 초기화(N=2) → bootRun → 이 스크립트(Git Bash)
 #   bash scripts/scenario-s1.sh            # 학생 20260011~20260015 (5명)
 #   COUNT=4 bash scripts/scenario-s1.sh    # 브라우저에서 1명을 같이 로그인할 때
-# 화면 밖 증거는 docker exec crs-db psql로 바로 출력한다.
+# 화면 밖 증거는 docker exec로 DB 컨테이너의 psql에서 바로 출력한다. 기본은 backend-practice/compose.yaml의 crs-db다.
+#   루트 compose.yaml로 띄웠으면: BASE=http://localhost/api/v1 ORIGIN=http://localhost DB_CONTAINER=crs-db-1 bash scripts/scenario-s1.sh
 # =====================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/smoke-lib.sh"
 COUNT="${COUNT:-5}"; FIRST="${FIRST:-20260011}"
-PSQL=(docker exec crs-db psql -U crs -d crs -X -q -P pager=off)
+DB_CONTAINER="${DB_CONTAINER:-crs-db}"
+PSQL=(docker exec "$DB_CONTAINER" psql -U crs -d crs -X -q -P pager=off)
 
 echo "S1: 학생 $COUNT명 동시 로그인 ($BASE, N은 서버 설정값)"
 require_server
