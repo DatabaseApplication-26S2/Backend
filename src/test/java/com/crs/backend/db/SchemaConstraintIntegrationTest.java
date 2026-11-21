@@ -506,6 +506,11 @@ class SchemaConstraintIntegrationTest {
             assertEquals("0A1,Z01,a01", scalar("""
                 SELECT string_agg(course_code, ',' ORDER BY course_code)
                   FROM courses WHERE course_code IN ('0A1', 'Z01', 'a01')"""));
+            // DB 기본 콜레이션이 C여도 통과하지 않도록 컬럼 자체의 콜레이션을 직접 확인한다
+            assertEquals("C", scalar("""
+                SELECT co.collname
+                  FROM pg_attribute a JOIN pg_collation co ON co.oid = a.attcollation
+                 WHERE a.attrelid = 'courses'::regclass AND a.attname = 'course_code'"""));
         }
 
         @Test

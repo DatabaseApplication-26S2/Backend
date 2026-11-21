@@ -48,7 +48,7 @@ SELECT c.relname AS table_name,
           array_position(ARRAY['p','u','f','c']::"char"[], con.contype),
           con.conname;
 
-\echo '== 4. 인덱스 (constraint_backed = PK·UNIQUE 제약이 만든 인덱스)'
+\echo '== 4. 인덱스 (constraint_backed = PK·UNIQUE·배제 제약이 만든 인덱스)'
 SELECT t.relname AS table_name,
        i.relname AS index_name,
        ix.indisunique AS is_unique,
