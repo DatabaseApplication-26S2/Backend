@@ -95,7 +95,8 @@ class CourseAdminContractTest {
     @Test
     void 과목_검색과_상세() throws Exception {
         String student = admittedStudent();
-        contract("/courses", "get", get("/api/v1/courses?page=1").header("Authorization", student), 200);
+        MockHttpServletResponse found = contract("/courses", "get", get("/api/v1/courses?page=1").header("Authorization", student), 200);
+        assertThat(JsonPath.<List<Object>>read(found.getContentAsString(), "$.items")).isNotEmpty(); // 항목 스키마가 실제로 검증되도록
         contract("/courses", "get", get("/api/v1/courses?page=0").header("Authorization", student), 400);
 
         contract("/courses/{courseCode}", "get", get("/api/v1/courses/QC100").header("Authorization", student), 200);
@@ -133,15 +134,18 @@ class CourseAdminContractTest {
     void 교수_담당과목_등록_수정_폐강() throws Exception {
         String prof = bearer(PROF);
 
-        contract("/professor/courses", "get", get("/api/v1/professor/courses").header("Authorization", prof), 200);
+        MockHttpServletResponse mine = contract("/professor/courses", "get",
+                get("/api/v1/professor/courses").header("Authorization", prof), 200);
+        assertThat(JsonPath.<List<String>>read(mine.getContentAsString(), "$.items[*].courseCode"))
+                .contains("QC100", "QC200", "QC400", "QC500").doesNotContain("QC300"); // 담당 과목만, 폐강 포함
         contract("/professor/courses", "get", get("/api/v1/professor/courses").header("Authorization", admittedStudent()), 403);
 
         String create = "{\"courseCode\":\"QC600\",\"name\":\"계약 점검\",\"category\":\"MAJOR\",\"evaluationType\":\"ABSOLUTE\","
                 + "\"capacity\":20,\"minimumEnrollment\":3,\"classroom\":\"점검실\"}";
         contract("/professor/courses", "post", post("/api/v1/professor/courses").header("Authorization", prof)
                 .contentType("application/json").content(create), 201);
-        contract("/professor/courses", "post", post("/api/v1/professor/courses").header("Authorization", prof)
-                .contentType("application/json").content(create), 409); // E10 같은 과목코드
+        assertProblemCode(contract("/professor/courses", "post", post("/api/v1/professor/courses").header("Authorization", prof)
+                .contentType("application/json").content(create), 409), "E10"); // 같은 과목코드
 
         String update = "{\"name\":\"과목\",\"category\":\"MAJOR\",\"evaluationType\":\"RELATIVE\","
                 + "\"capacity\":30,\"minimumEnrollment\":1,\"classroom\":\"공학관 202\"}";
@@ -152,8 +156,8 @@ class CourseAdminContractTest {
 
         contract("/professor/courses/{courseCode}/closure", "post",
                 post("/api/v1/professor/courses/QC400/closure").header("Authorization", prof), 200);
-        contract("/professor/courses/{courseCode}/closure", "post",
-                post("/api/v1/professor/courses/QC400/closure").header("Authorization", prof), 409); // E14 이미 폐강
+        assertProblemCode(contract("/professor/courses/{courseCode}/closure", "post",
+                post("/api/v1/professor/courses/QC400/closure").header("Authorization", prof), 409), "E14"); // 이미 폐강
     }
 
     // ===================== 관리자 (5) =====================
@@ -164,14 +168,23 @@ class CourseAdminContractTest {
 
         contract("/admin/enrollments", "post", post("/api/v1/admin/enrollments").header("Authorization", admin)
                 .contentType("application/json").content("{\"studentId\":\"" + ASSIGNEE + "\",\"courseCode\":\"QC100\"}"), 201);
-        contract("/admin/enrollments", "post", post("/api/v1/admin/enrollments").header("Authorization", admin)
-                .contentType("application/json").content("{\"studentId\":\"" + ASSIGNEE + "\",\"courseCode\":\"QC200\"}"), 409); // E05
+        assertProblemCode(contract("/admin/enrollments", "post", post("/api/v1/admin/enrollments").header("Authorization", admin)
+                .contentType("application/json").content("{\"studentId\":\"" + ASSIGNEE + "\",\"courseCode\":\"QC200\"}"), 409), "E05");
 
-        contract("/admin/closure-candidates", "get", get("/api/v1/admin/closure-candidates?page=1").header("Authorization", admin), 200);
+        // 페이지 크기·다른 테스트 데이터에 따라 시드 과목이 첫 페이지에 없을 수 있어 비어 있지 않음만 단언한다
+        MockHttpServletResponse candidates = contract("/admin/closure-candidates", "get",
+                get("/api/v1/admin/closure-candidates?page=1").header("Authorization", admin), 200);
+        assertThat(JsonPath.<List<Object>>read(candidates.getContentAsString(), "$.items")).isNotEmpty();
         contract("/admin/closure-candidates", "get", get("/api/v1/admin/closure-candidates?page=0").header("Authorization", admin), 400);
 
-        contract("/admin/course-closures", "post", post("/api/v1/admin/course-closures").header("Authorization", admin)
-                .contentType("application/json").content("{\"courseCodes\":[\"QC500\",\"QC999\"]}"), 200); // OK·E04 항목
+        MockHttpServletResponse closures = contract("/admin/course-closures", "post", post("/api/v1/admin/course-closures")
+                .header("Authorization", admin).contentType("application/json")
+                .content("{\"courseCodes\":[\"QC500\",\"QC999\"]}"), 200);
+        String closuresJson = closures.getContentAsString();
+        assertThat(JsonPath.<List<String>>read(closuresJson, "$.items[*].courseCode")).containsExactly("QC500", "QC999");
+        assertThat(JsonPath.<String>read(closuresJson, "$.items[0].code")).isEqualTo("OK"); // closedEnrollmentCount 정수 분기 검증
+        assertThat(JsonPath.<Integer>read(closuresJson, "$.items[0].closedEnrollmentCount")).isNotNull();
+        assertThat(JsonPath.<String>read(closuresJson, "$.items[1].code")).isEqualTo("E04");
         contract("/admin/course-closures", "post", post("/api/v1/admin/course-closures").header("Authorization", admin)
                 .contentType("application/json").content("{\"courseCodes\":[]}"), 400);
     }
@@ -227,6 +240,11 @@ class CourseAdminContractTest {
         MockHttpServletResponse response = mvc.perform(request).andExpect(status().is(expectedStatus)).andReturn().getResponse();
         OpenApiResponses.verify(path, method, response);
         return response;
+    }
+
+    /** 오류 응답의 problem `code`가 기대한 업무 오류 코드인지 확인한다(다른 409가 통과하지 않도록) */
+    private static void assertProblemCode(MockHttpServletResponse response, String expectedCode) throws Exception {
+        assertThat(JsonPath.<String>read(response.getContentAsString(), "$.code")).isEqualTo(expectedCode);
     }
 
     /** 접수된 티켓을 claim하고 핸들러가 끝날 때까지 기다린다(PR #14부터 핸들러는 비동기로 돈다) */
