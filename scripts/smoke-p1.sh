@@ -4,9 +4,9 @@
 #
 # 준비
 #   1) docker compose up -d db redis
-#   2) .\gradlew.bat bootRun              (기본 프로파일 local)
-#   3) 테스트 계정·과목 데이터(local-test-data.sql)를 넣어 둔다
-#      학생 20260003, 교수 prof01, 관리자 admin01 / 비밀번호 Test-password1!
+#   2) .\gradlew.bat bootRun              (기본 프로파일 local: V900 시연 시드가 들어간다)
+#   기본값은 V900 시드다(학생 20260003, 교수 P1001, 관리자 A1001 / 비밀번호 Demo-password1!).
+#   다른 SQL을 미리 넣을 필요가 없다. 폐강 과목(SMKCLOSED)은 처음 실행할 때 스크립트가 API로 만든다.
 #
 # 실행(Windows는 Git Bash)
 #   bash scripts/smoke-p1.sh
@@ -52,6 +52,7 @@ run_p1() {
   login "$PROFESSOR"; P_ACCESS="$ACCESS"; PA=(-H "Authorization: Bearer $P_ACCESS")
   login "$ADMIN";     A_ACCESS="$ACCESS"; AA=(-H "Authorization: Bearer $A_ACCESS")
   check "교수·관리자 로그인" eval '[ -n "$P_ACCESS" ] && [ -n "$A_ACCESS" ]'
+  ensure_closed_course "$P_ACCESS"   # [7]·[10]에서 쓰는 폐강 과목 준비
 
   # ===================== 4. POST /admission =====================
   echo "[4] 화면 진입 POST /admission"
@@ -118,10 +119,10 @@ run_p1() {
 
   # ===================== 11. PUT /professor/courses/{code} =====================
   echo "[11] 과목 수정 PUT /professor/courses/{courseCode}"
-  # 같은 값으로 덮어써서 여러 번 실행해도 데이터가 바뀌지 않게 한다(CSE4020 컴파일러)
-  UPD='{"name":"컴파일러","category":"MAJOR","evaluationType":"ABSOLUTE","capacity":30,"minimumEnrollment":6,"classroom":"공학관 402"}'
-  req PUT /professor/courses/CSE4020 "$UPD" "${PA[@]}"
-  check "200 수정된 과목" eval '[ "$STATUS" = 200 ] && [ "$(json_get courseCode)" = CSE4020 ]'
+  # 현재 값 그대로 다시 저장해서 여러 번 실행해도 데이터가 바뀌지 않게 한다
+  course_update_body "$COURSE_OWN" "$P_ACCESS"
+  req PUT "/professor/courses/$COURSE_OWN" "$UPD" "${PA[@]}"
+  check "200 수정된 과목" eval '[ "$STATUS" = 200 ] && [ "$(json_get courseCode)" = "$COURSE_OWN" ]'
   req PUT "/professor/courses/$COURSE_OTHERS" "$UPD" "${PA[@]}"
   check "남의 과목 → 403 E02 FORBIDDEN" eval '[ "$STATUS" = 403 ] && [ "$(json_get reason)" = FORBIDDEN ]'
 

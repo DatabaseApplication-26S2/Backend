@@ -17,17 +17,19 @@
 bash scripts/smoke-all.sh
 ```
 
-기본값은 로컬 테스트 데이터(`local-test-data.sql`: `prof01`·`admin01`·`20260003`, 비밀번호 `Test-password1!`) 기준이다.
-V900 시연 시드(demo 프로파일)로 실행할 때는 `integration-checklist-p1.md` 5절처럼 `scripts/smoke-auth-demo.sql`을 한 번 넣고 환경 변수를 지정한다.
+기본값은 V900 시연 시드다(local·demo 프로파일이 자동 적용). 환경 변수나 보조 SQL 없이 실행한다.
 
-```bash
-BASE=http://127.0.0.1:18080/api/v1 \
-PASSWORD='Demo-password1!' STUDENT=20260003 STUDENT2=20260002 PROFESSOR=P1001 ADMIN=A1001 \
-COURSE_ENROLL=DEMO02 COURSE_ASSIGN=DEMO03 COURSE_CLOSED=SMKCLOSED COURSE_OTHERS=DEMO02 COURSE_DETAIL=DEMO01 \
-bash scripts/smoke-all.sh
-```
+| 변수 | 기본값 | 쓰임 |
+|---|---|---|
+| `STUDENT` · `STUDENT2` | `20260003` · `20260002` | 학생. `STUDENT2`는 [18] 재사용 탐지로 세션이 폐기된다 |
+| `PROFESSOR` · `ADMIN` | `P1001` · `A1001` | 교수·관리자(비밀번호 `Demo-password1!`) |
+| `COURSE_ENROLL` · `COURSE_OTHERS` | `DEMO05` | 학생 신청·취소, P1001이 담당하지 않는 과목 |
+| `COURSE_ASSIGN` | `DEMO03` | 관리자 배정 |
+| `COURSE_OWN` | `DEMO04` | P1001 담당 과목. 현재 값 그대로 다시 저장해 수정을 확인한다 |
+| `COURSE_CLOSED` | `SMKCLOSED` | 폐강 과목. 없으면 스크립트가 P1001로 등록·폐강해 만든다(처음 한 번) |
+| `COURSE_DETAIL` | `DEMO01` | [13] 상세 조회와 [14] 중복 등록(E10) |
 
-- `COURSE_DETAIL`: [13] 상세 조회와 [14] 중복 등록(E10)에 쓰는 기존 과목이다.
+다른 서버나 데이터로 실행할 때만 환경 변수로 바꾼다. 예: `BASE=http://127.0.0.1:18080/api/v1 bash scripts/smoke-all.sh`
 - 실패 출력에는 연산 이름과 HTTP 상태만 남는다. 응답 본문과 쿠키는 출력하지 않는다(토큰 노출 방지).
 
 ### 기존 통합본 기준 예상(아래 11/20 실측 결과 참조)
@@ -67,12 +69,17 @@ bash scripts/smoke-all.sh
 | 19 | `GET /admin/settings` | BE-14(팀원3) | 200 N·슬롯·대기 수 | 교수 → 403 E02 | ✅ 통과 |
 | 20 | `PUT /admin/settings` | BE-14(팀원3) | 200, 새 N·변경자 기록 | 범위 밖(0) → 400 E09 | ✅ 통과 |
 
-**실행 기록:** 2026-11-21 김민준, feature/auth-login에 main 6a05e50(PR #14 과목별 동시 처리 포함)을 병합하고 리뷰 지적을 고친 본. Java 21 / PostgreSQL 17 / Redis 7 / demo 프로파일, 일회용 Docker Compose 스택(포트 18084). 위 V900 환경 변수로 smoke-all.sh 실행: **45/45 통과, 20개 연산 성공·대표 오류 확인**.
+**실행 기록:** 2026-11-22 김민준, `feature/sub-course-admin-m5`(#9)에 main `fe25e40`(PR #17까지)을 병합한 본. Java 21 / PostgreSQL 17 / Redis 7 / demo 프로파일, 루트 `compose.yaml`로 띄운 일회용 스택(포트 18086). `BASE`·`ORIGIN`만 넘기고 계정·과목 변수와 보조 SQL 없이 기본값으로 실행했다.
 
-`./gradlew build redisTest`: 일반 테스트 161개 + 실제 Redis 테스트 10개, 실패·오류·건너뜀 0건. Redis 테스트는 3회 연속 통과.
-시연 스크립트(PowerShell 7.4): 동시 로그인 5 OK. 동시 신청 30건은 3 OK(번호가 가장 작은 3건) / 27 E07이며, 첫 접수부터 마지막 판정까지 15.09초 걸렸다. SQL INV-2 불일치 0행.
+- `smoke-all.sh`: **45/45 통과**(같은 DB에서 연속 2회), `smoke-p1.sh`: **27/27 통과**
+- `scenario-s1.sh`(N=2, 5명 동시 로그인): 5/5 성공, 관측한 `PROCESSING` 최댓값 2
+- `scenario-s2.sh`(DEMO01 정원 3, 30명 동시 신청): OK 3건 / E07 27건, INV-2 검증 쿼리 0행
+- main `fe25e40`의 `./gradlew clean build redisTest`: 일반 테스트 556개(X-02 제약 음성 테스트 391개 포함) + Redis 테스트 10개, 실패·오류 0건
+
+이전 기록: 2026-11-21 김민준, feature/auth-login에 main 6a05e50을 병합한 본(일회용 스택, 포트 18084). V900 환경 변수로 smoke 45/45, 일반 테스트 161개 + Redis 테스트 10개 통과. 시연 스크립트(PowerShell 7.4)는 동시 로그인 5 OK, 동시 신청 30건 3 OK / 27 E07, 15.09초, INV-2 불일치 0행.
 
 이전 기록: 2026-11-20 김재섭, feature/auth-login(main 3869cde 통합본)에서 smoke 45/45, 일반 테스트 129개 + Redis 테스트 7개 통과.
+이전 기록: 2026-11-20 20:28 백진현, `feature/sub-course-admin-m5`(main `3237fd9` + BE-14), local 프로파일·V900 시드(새 DB), 환경 변수 없이 기본값으로 `smoke-all.sh` 45/45 통과(exit 0).
 
 ## 2. 계약 적합성(BE-16, 팀원2)
 
