@@ -17,9 +17,11 @@ import com.crs.backend.domain.entity.UserAccount;
 import com.crs.backend.domain.enums.UserRole;
 import com.crs.backend.domain.service.ConcurrencyTestConfig;
 import com.crs.backend.queue.QueueService;
+import com.jayway.jsonpath.JsonPath;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -109,14 +111,19 @@ class CourseAdminContractTest {
         contract("/me/enrollments", "post", post("/api/v1/me/enrollments").header("Authorization", student)
                 .contentType("application/json").content("{\"courseCode\":\"QC100\"}"), 202);
         drain();
+        assertThat(ticketOutcome("ENROLLMENT", "QC100")).isEqualTo("SUCCEEDED/OK"); // 비동기 핸들러가 실제로 신청을 끝냈다
         contract("/me/enrollments", "post", post("/api/v1/me/enrollments").header("Authorization", student)
                 .contentType("application/json").content("{\"courseCode\":\"QC999\"}"), 404);
 
-        contract("/me/enrollments", "get", get("/api/v1/me/enrollments").header("Authorization", student), 200);
+        MockHttpServletResponse list = contract("/me/enrollments", "get",
+                get("/api/v1/me/enrollments").header("Authorization", student), 200);
+        assertThat(JsonPath.<List<Object>>read(list.getContentAsString(), "$.items")).hasSize(1); // 빈 목록이면 항목 스키마가 검증되지 않는다
+        assertThat(JsonPath.<String>read(list.getContentAsString(), "$.items[0].courseCode")).isEqualTo("QC100");
         contract("/me/enrollments", "get", get("/api/v1/me/enrollments").header("Authorization", bearer(PROF)), 403);
 
         contract("/me/enrollments/{courseCode}", "delete", delete("/api/v1/me/enrollments/QC100").header("Authorization", student), 202);
         drain();
+        assertThat(ticketOutcome("CANCELLATION", "QC100")).isEqualTo("SUCCEEDED/OK"); // 202 접수증이 실제 취소로 이어졌다
         contract("/me/enrollments/{courseCode}", "delete", delete("/api/v1/me/enrollments/QC999").header("Authorization", student), 404);
     }
 
@@ -173,16 +180,43 @@ class CourseAdminContractTest {
     void 관리자_서비스_설정_조회와_변경() throws Exception {
         String admin = bearer(ADMIN);
         int n = jdbc.sql("SELECT concurrency_limit FROM service_settings").query(Integer.class).single();
+        int changed = n == 1 ? 2 : n - 1; // 원래 값과 다른, 유효 범위 안의 N
 
         contract("/admin/settings", "get", get("/api/v1/admin/settings").header("Authorization", admin), 200);
         contract("/admin/settings", "get", get("/api/v1/admin/settings").header("Authorization", bearer(PROF)), 403);
 
-        // 같은 값으로 저장해 다른 테스트가 쓰는 N을 바꾸지 않는다(같은 값은 변경자·시각도 그대로다)
-        contract("/admin/settings", "put", put("/api/v1/admin/settings").header("Authorization", admin)
-                .contentType("application/json").content("{\"concurrencyLimit\":" + n + "}"), 200);
-        contract("/admin/settings", "put", put("/api/v1/admin/settings").header("Authorization", admin)
-                .contentType("application/json").content("{\"concurrencyLimit\":0}"), 400);
+        try {
+            // 다른 값으로 저장해야 변경자·시각이 채워진 응답(date-time 포함)을 검증할 수 있다
+            MockHttpServletResponse saved = contract("/admin/settings", "put", put("/api/v1/admin/settings")
+                    .header("Authorization", admin).contentType("application/json")
+                    .content("{\"concurrencyLimit\":" + changed + "}"), 200);
+            assertThat(JsonPath.<Integer>read(saved.getContentAsString(), "$.concurrencyLimit")).isEqualTo(changed);
+            assertThat(JsonPath.<String>read(saved.getContentAsString(), "$.lastChangedBy")).isEqualTo(ADMIN);
+            assertThat(JsonPath.<Object>read(saved.getContentAsString(), "$.lastChangedAt")).isNotNull();
+
+            MockHttpServletResponse read = contract("/admin/settings", "get",
+                    get("/api/v1/admin/settings").header("Authorization", admin), 200);
+            assertThat(JsonPath.<Integer>read(read.getContentAsString(), "$.concurrencyLimit")).isEqualTo(changed);
+            assertThat(JsonPath.<String>read(read.getContentAsString(), "$.lastChangedBy")).isEqualTo(ADMIN);
+            assertThat(JsonPath.<Object>read(read.getContentAsString(), "$.lastChangedAt")).isNotNull();
+
+            contract("/admin/settings", "put", put("/api/v1/admin/settings").header("Authorization", admin)
+                    .contentType("application/json").content("{\"concurrencyLimit\":0}"), 400);
+        } finally {
+            // 같은 컨텍스트를 쓰는 다른 테스트를 위해 단언이 실패해도 원래 N으로 되돌린다
+            mvc.perform(put("/api/v1/admin/settings").header("Authorization", admin)
+                    .contentType("application/json").content("{\"concurrencyLimit\":" + n + "}"));
+        }
         assertThat(jdbc.sql("SELECT concurrency_limit FROM service_settings").query(Integer.class).single()).isEqualTo(n);
+    }
+
+    /** 학생의 해당 유형·과목 티켓의 최종 상태("상태/결과")를 돌려준다 */
+    private String ticketOutcome(String requestType, String courseCode) {
+        return jdbc.sql("""
+                SELECT status_cd || '/' || COALESCE(result_cd, '') FROM tickets
+                WHERE requester_user_id = :student AND request_type = :type AND course_code_snapshot = :code""")
+                .param("student", STUDENT).param("type", requestType).param("code", courseCode)
+                .query(String.class).single();
     }
 
     // ===================== 도우미 =====================
