@@ -164,16 +164,16 @@ public class AuthService {
         jdbc.update("INSERT INTO refresh_tokens(refresh_token_hash,session_id,issued_at) VALUES (?,CAST(? AS uuid),clock_timestamp())", hash(refresh), session.id());
         var access = tokens.issue(session.id(), session.userId(), session.role(), session.expiresAt(), now());
         return new IssuedTokens(access.value(), refresh, session.expiresAt(), new UserView(session.userId(), session.name(), session.role()),
-            new SessionView(session.expiresAt(), session.admittedAt()), access.expiresIn());
+            new SessionView(session.expiresAt(), session.role() == UserRole.STUDENT ? session.admittedAt() : null), access.expiresIn());
     }
-    @Transactional(noRollbackFor = AuthFailure.class)
+    @Transactional(noRollbackFor = RefreshTokenReuseFailure.class)
     public IssuedTokens refresh(String raw) {
         String sid = refreshSession(raw);
         if (sid == null) throw new AuthFailure(401, "REFRESH_TOKEN_INVALID");
         var session = guard.lock(sid);
         boolean used = Boolean.TRUE.equals(jdbc.queryForObject("SELECT consumed_at IS NOT NULL FROM refresh_tokens WHERE refresh_token_hash=?", Boolean.class, hash(raw)));
         session.requireValid();
-        if (used) { revoke(sid, "REFRESH_REUSE"); throw new AuthFailure(401, "REFRESH_TOKEN_REUSED"); }
+        if (used) { revoke(sid, "REFRESH_REUSE"); throw new RefreshTokenReuseFailure(); }
         jdbc.update("UPDATE refresh_tokens SET consumed_at=clock_timestamp() WHERE refresh_token_hash=?", hash(raw));
         return issue(session);
     }

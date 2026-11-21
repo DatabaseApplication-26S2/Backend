@@ -66,22 +66,33 @@ SessionGuard.lock(sessionId) returns a scalar Snapshot under FOR NO KEY UPDATE a
 existing transaction. requireStudent(expectedUserId) checks the original session, current role,
 revocation and DB-clock expiry. Other queue handlers can reuse this guard.
 
-The common TicketIntake/TicketHandler interfaces are still absent from the available team code.
-The current LOGIN/ADMISSION adapter in QueueService selects DB WAITING rows in ticket order,
-checks the shared N limit, and runs AuthService.processLogin/processAdmission transactionally.
-Redis is a post-commit ordering mirror for these types; failed publication cannot strand them.
-This adapter is intentionally not the team's full asynchronous dispatcher/recovery implementation.
-The course enrollment/cancellation queue path and multi-instance recovery remain BE-03/04/08/17
-integration work with the queue owner. Use AuthService.INTAKE_LOCK (20260001) for shared intake
-serialization, and preserve the generation/worker check before consuming login credentials.
+The branch now incorporates main 3869cde (2026-11-20), including the common TicketIntake,
+TicketDispatcher, all four handlers, and BE-17 lease/recovery code. Redis is an ordering mirror;
+DB WAITING rows remain authoritative. RedisWaitingOrderReconciler clears/reloads the mirror on
+startup and reconciles every 10 seconds, reading Redis before DB and leaving newly published
+members outside its observed snapshot untouched. A failed Redis pass is retried next period.
+Use AuthService.INTAKE_LOCK (20260001) for shared intake serialization, and preserve the
+generation/worker check before consuming login credentials.
 
 ## Contract evidence and browser integration
 
-src/test/resources/contract/notion-schemas.json reconstructs 47 schemas from the supplied Notion
-schema blocks and property tables, including conditional constraints. Networknt validates actual
-authentication responses and rejects invalid types, enums, ranges, extra fields, and conditions.
-PROVENANCE.txt records the source. This is not a frozen original openapi.yaml: the team Docs
-repository was empty when checked. Final equivalence to that original remains a team check.
+docs/openapi.yaml and src/test/resources/contract/openapi.yaml contain the original from team
+Docs b28a9d1, normalized to LF. SHA-256 is
+4ad2af2c78eea13aa46aac2bec5ac285c136f6048a538121b29df1547ca3e5bc (checked in tests).
+OpenApiResponses.verify(pathTemplate, method, response) is a shared test helper for original
+OpenAPI operation/status/content/header checks and JSON Schema 2020-12 response validation.
+AuthIntegrationTest covers success/error responses for login, exchange, refresh, logout,
+admission and ticket polling. ContractSchemaTest rejects type, enum, range, additional-property
+and conditional violations. The remaining 14 operations' full schema checks belong to BE-16 #8b;
+smoke-all.sh covers their functional success/error cases but is not a schema validator.
+PROVENANCE.txt records the source. The previous reconstructed schema has been removed.
+
+Run ./gradlew.bat build redisTest with Docker running for PostgreSQL and Redis integration tests.
+RedisReconciliationIntegrationTest covers late ZADD, missing publication, wrong scores, key deletion,
+startup rebuild, and a paused/unavailable Redis while DB intake/processing/polling continue.
+AuthIntegrationTest covers rollback at the fractional-second expiry boundary, simultaneous HTTP
+refresh (one 200, one 401), current-role projection, and old-generation/missing-memory LOGIN recovery.
+See docs/demo-auth-rehearsal.md for S1/S2 scripts, evidence SQL, and interactive S5 lock instructions.
 
 Cookie operations require Origin matching APP_FRONTEND_ORIGIN (default http://localhost:5173)
 and X-CSRF-Protection: 1. Frontend requests need credentials: 'include'.
