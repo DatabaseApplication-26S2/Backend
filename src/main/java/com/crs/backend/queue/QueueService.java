@@ -101,7 +101,7 @@ public class QueueService {
     }
 
     /**
-     * 스케줄러·테스트 진입점. DB claim 뒤 티켓마다 작업을 워커 실행기에 넘기고 claim 건수를 곧바로 돌려준다(구현계획 4절 (6)).
+     * 스케줄러·테스트 진입점. DB claim 뒤 과목별 묶음마다 작업 하나를 워커 실행기에 넘기고 claim 건수를 곧바로 돌려준다(구현계획 4절 (6)).
      * 처리 완료가 필요하면 {@code TicketDispatcher.awaitIdle}로 기다린다.
      */
     public int admitWaitingUsers() {
