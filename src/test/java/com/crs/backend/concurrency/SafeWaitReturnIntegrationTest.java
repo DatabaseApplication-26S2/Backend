@@ -266,6 +266,8 @@ class SafeWaitReturnIntegrationTest {
                 int claimed = within(pool, dispatcher::claimAndDispatch);
 
                 assertThat(claimed).as("B만 claim").isEqualTo(1);
+                // claim은 핸들러 완료를 기다리지 않는다. B의 작업이 끝나(잠금에 막히지 않고 복귀) 추적이 풀릴 때까지 제한 시간 안에서 기다린다
+                assertThat(dispatcher.awaitIdle(java.time.Duration.ofSeconds(WAIT_SECONDS))).as("B의 작업이 과목 잠금에 막히지 않고 끝난다").isTrue();
                 Map<String, Object> returned = row(b);
                 assertThat(returned.get("status_cd")).isEqualTo("WAITING");
                 assertThat(returned.get("result_cd")).isNull();
@@ -295,6 +297,7 @@ class SafeWaitReturnIntegrationTest {
 
         // 다음 claim에서 B가 다시 잡혀 끝난다
         assertThat(dispatcher.claimAndDispatch()).isEqualTo(1);
+        assertThat(dispatcher.awaitIdle(java.time.Duration.ofSeconds(WAIT_SECONDS))).as("B의 재배정 작업 종료").isTrue();
 
         Map<String, Object> done = row(b);
         assertThat(done.get("status_cd")).isEqualTo("SUCCEEDED");
@@ -353,6 +356,8 @@ class SafeWaitReturnIntegrationTest {
         try {
             // N=3이므로 한 번의 claim이 1·2·3번을 모두 잡는다. 3번 핸들러는 2번이 미완료라 곧바로 WAITING으로 복귀한다
             assertThat(within(workerPool, dispatcher::claimAndDispatch)).as("한 배치로 3건 claim").isEqualTo(3);
+            // 1·2번은 스파이가 곧바로 돌려보내고 3번은 복귀한다. 세 작업이 모두 끝날 때까지 기다린 뒤 상태를 읽는다
+            assertThat(dispatcher.awaitIdle(java.time.Duration.ofSeconds(WAIT_SECONDS))).as("세 작업 종료").isTrue();
 
             assertThat(row(t1).get("status_cd")).as("1번은 미완료, 슬롯 보유").isEqualTo("PROCESSING");
             assertThat(row(t2).get("status_cd")).as("2번은 미완료, 슬롯 보유").isEqualTo("PROCESSING");
@@ -389,6 +394,7 @@ class SafeWaitReturnIntegrationTest {
 
             // A=0이므로 다음 claim이 3번을 다시 잡는다. N 변경 뒤 DispatchKick이 먼저 잡았을 수 있어 반환값은 단정하지 않고 종결만 기다린다
             within(workerPool, dispatcher::claimAndDispatch);
+            assertThat(dispatcher.awaitIdle(java.time.Duration.ofSeconds(WAIT_SECONDS))).as("3번 재배정 작업 종료").isTrue();
             await("3번 종결", () -> failOnDeferredError(deferred) || "SUCCEEDED".equals(row(t3).get("status_cd")));
         } finally {
             latches.values().forEach(CountDownLatch::countDown);

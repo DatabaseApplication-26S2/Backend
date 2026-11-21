@@ -10,6 +10,12 @@ public class QueueProperties {
     private long activeTtlMinutes = 5L;
     private long schedulerFixedDelayMs = 1000L;
 
+    /**
+     * 동시에 실행하는 티켓 핸들러 수 상한(구현계획 4절 (6)). 핸들러는 트랜잭션 동안 DB 연결을 하나씩 쥐므로
+     * {@code spring.datasource.hikari.maximum-pool-size}보다 작게 둔다
+     */
+    private int workerConcurrency = 16;
+
     // 3단계 재투입(구현계획 4절 (8), D-07 점검 주기 10초). 스케줄은 TicketReclaimer·TicketLeaseRenewer의 @Scheduled가 같은 키를 읽는다
     private long reclaimFixedDelayMs = 10000L;
     private long leaseRenewFixedDelayMs = 10000L;
@@ -46,6 +52,14 @@ public class QueueProperties {
 
     public void setSchedulerFixedDelayMs(long schedulerFixedDelayMs) {
         this.schedulerFixedDelayMs = schedulerFixedDelayMs;
+    }
+
+    public int getWorkerConcurrency() {
+        return workerConcurrency;
+    }
+
+    public void setWorkerConcurrency(int workerConcurrency) {
+        this.workerConcurrency = workerConcurrency;
     }
 
     public long getReclaimFixedDelayMs() {

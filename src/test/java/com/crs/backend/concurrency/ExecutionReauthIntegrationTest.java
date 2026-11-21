@@ -168,6 +168,7 @@ class ExecutionReauthIntegrationTest {
         logout(sessionA);
         logout(sessionB);
         assertThat(dispatcher.claimAndDispatch()).isEqualTo(2);
+        assertThat(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10))).isTrue();
 
         assertRejected(enroll, "E02");
         assertRejected(cancel, "E02");
@@ -198,6 +199,7 @@ class ExecutionReauthIntegrationTest {
             assertThat(sql.update("UPDATE users SET role_cd='PROFESSOR' WHERE user_id=?", user)).isEqualTo(1);
         }
         assertThat(dispatcher.claimAndDispatch()).isEqualTo(4);
+        assertThat(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10))).isTrue();
 
         for (long id : new long[] {enrollC, enrollD, cancelE, cancelF}) assertRejected(id, "E02");
         assertThat(enrollmentRows("studentC")).as("C 내역 없음").isZero();
@@ -226,6 +228,7 @@ class ExecutionReauthIntegrationTest {
         assertThat(activeCnt(course)).isEqualTo(1);
 
         assertThat(dispatcher.claimAndDispatch()).isEqualTo(4);
+        assertThat(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10))).isTrue();
 
         assertRejected(a, "E15");
         assertRejected(b, "E15");

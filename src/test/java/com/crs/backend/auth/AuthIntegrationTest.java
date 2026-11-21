@@ -37,6 +37,7 @@ class AuthIntegrationTest {
     @Autowired WaitingTicketJpaRepository tickets;
     @Autowired LoginCredentialStore credentials;
     @Autowired QueueService queue;
+    @Autowired com.crs.backend.application.TicketDispatcher dispatcher;
     @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
     @Autowired org.springframework.transaction.support.TransactionTemplate tx;
     @jakarta.persistence.PersistenceContext jakarta.persistence.EntityManager em;
@@ -53,6 +54,7 @@ class AuthIntegrationTest {
         // DB claim 디스패처가 WAITING LOGIN 티켓을 잡아 processLogin 한다 (Redis poll 의존 제거)
         assertNotNull(receipt.ticketId());
         queue.admitWaitingUsers();
+        assertTrue(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10)));
     }
     @Test void httpLoginTokensProtectedApiAndLogout() throws Exception {
         var result = mvc.perform(post("/api/v1/auth/login").header("Origin", "http://localhost:5173").header("X-CSRF-Protection", "1").contentType("application/json")
@@ -156,6 +158,7 @@ class AuthIntegrationTest {
     @Test void admissionIsPerSessionAndSurvivesRedisDeletionAndRefresh() throws Exception {
         var first = issued(); var firstUser = auth.authenticate(first.accessToken());
         auth.requestAdmission(firstUser.userId(), firstUser.sessionId()); queue.admitWaitingUsers();
+        assertTrue(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10)));
         assertTrue(auth.isAdmitted(firstUser.userId(), firstUser.sessionId()));
         var rotated = auth.refresh(first.refreshToken());
         assertNotNull(rotated.session().admittedAt());
@@ -167,6 +170,7 @@ class AuthIntegrationTest {
             .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("E15"));
         var receipt = (com.crs.backend.adapter.in.web.dto.TicketReceipt) auth.requestAdmission(secondUser.userId(), secondUser.sessionId());
         auth.logout(second.refreshToken()); queue.admitWaitingUsers();
+        assertTrue(dispatcher.awaitIdle(java.time.Duration.ofSeconds(10)));
         assertEquals(TicketResultCode.E02, tickets.findById(Long.parseLong(receipt.ticketId())).orElseThrow().getResultCode());
     }
     @Test void logoutCookieHasPriorityAndAccessFallbackIsIdempotent() throws Exception {

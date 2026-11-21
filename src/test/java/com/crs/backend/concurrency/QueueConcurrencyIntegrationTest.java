@@ -9,6 +9,7 @@ import com.crs.backend.domain.entity.WaitingTicket;
 import com.crs.backend.domain.enums.UserRole;
 import com.crs.backend.adapter.out.persistence.jpa.WaitingTicketJpaRepository;
 import java.sql.Connection;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -153,6 +154,7 @@ class QueueConcurrencyIntegrationTest {
             Integer finished = sql.queryForObject("SELECT count(*) FROM tickets WHERE target_course_inst_id=CAST(? AS uuid) AND status_cd IN ('SUCCEEDED','REJECTED')", Integer.class, course);
             if (finished != null && finished == expected) return;
             dispatcher.claimAndDispatch();
+            assertThat(dispatcher.awaitIdle(Duration.ofSeconds(60))).isTrue();
         }
         throw new AssertionError("tickets did not finish within 90 seconds");
     }
@@ -242,6 +244,7 @@ class QueueConcurrencyIntegrationTest {
                     enrollmentHandler.handle(ticket, ticket.getGenerationNo());
                 }
                 dispatcher.claimAndDispatch();
+                assertThat(dispatcher.awaitIdle(Duration.ofSeconds(60))).isTrue();
             }
         } finally {
             startOthers.countDown();
@@ -327,6 +330,8 @@ class QueueConcurrencyIntegrationTest {
                 if (finished == 200) break;
                 List<Long> waiting = sql.queryForList("SELECT ticket_id FROM tickets WHERE status_cd='WAITING' ORDER BY ticket_id", Long.class);
                 int claimedCount = dispatcher.claimAndDispatch();
+                // Wait for the batch's handlers (including safe-wait returns to WAITING) so the next WAITING snapshot is stable.
+                assertThat(dispatcher.awaitIdle(Duration.ofSeconds(60))).isTrue();
                 List<Map<String,Object>> claims = sql.queryForList("""
                     SELECT observation_id, ticket_id, generation_no, processing_started_at
                     FROM t4_claim_observations WHERE observation_id > ? ORDER BY observation_id
