@@ -325,8 +325,8 @@ Docker가 설치된 Linux 서버에서 같은 `compose.yaml`과 `.env`로 띄운
 시드 계정의 비밀번호는 공개되어 있고, HTTP로도 curl 같은 도구로 `Origin`·`X-CSRF-Protection` 헤더를 붙여 API에 로그인할 수 있다. 그러므로 web 포트를 공개하기 전에 비밀번호를 바꾼다. Linux의 ufw·firewalld는 Docker가 공개한 포트를 막지 못하므로 호스트 방화벽에 기대지 않는다.
 
 1. `.env`에 `APP_FRONTEND_ORIGIN=https://<도메인>`을 넣고, `WEB_PORT`는 리버스 프록시의 위치에 따라 정한다.
-   - 프록시가 같은 서버에 있으면 `WEB_PORT=127.0.0.1:8080`을 넣는다. compose의 `"${WEB_PORT:-80}:80"`이 `127.0.0.1:8080:80`이 되어 web은 그 서버 안에서만 닿는다. 프록시는 `http://127.0.0.1:8080`으로 보낸다.
-   - 프록시가 다른 서버에 있으면 네트워크·하이퍼바이저 방화벽에서 web 포트를 프록시의 IP만 허용하도록 막는다.
+   - 프록시가 같은 서버에 있으면 `WEB_PORT=127.0.0.1:8080`을 넣는다. compose의 `"${WEB_PORT:-80}:80"`이 `127.0.0.1:8080:80`이 되어 web은 그 서버 안에서만 닿는다. 프록시가 web으로 보낼 주소는 5단계를 본다.
+   - 프록시가 다른 서버에 있으면 `WEB_PORT`를 기본값(또는 다른 포트 번호)으로 두고, 네트워크·하이퍼바이저 방화벽에서 web 포트를 프록시의 IP만 허용하도록 막는다.
 2. db, redis, api만 띄운다. 이 단계에서는 어떤 포트도 공개되지 않는다.
 
    ```sh
@@ -340,29 +340,46 @@ Docker가 설치된 Linux 서버에서 같은 `compose.yaml`과 `.env`로 띄운
    docker compose up -d --build --wait web
    ```
 
-5. TLS를 종료하는 리버스 프록시(예: Nginx Proxy Manager, Caddy, nginx)를 web의 포트 앞에 두고 HTTPS를 강제한다(HTTP 요청은 HTTPS로 리다이렉트).
+5. TLS를 종료하는 리버스 프록시(예: Nginx Proxy Manager, Caddy, nginx)를 web 앞에 두고 HTTPS를 강제한다(HTTP 요청은 HTTPS로 리다이렉트). 프록시가 web으로 보낼 주소는 프록시를 실행하는 방식에 따라 다르다.
+   - 프록시를 서버에 직접 설치했거나(nginx·Caddy 패키지) 컨테이너를 `network_mode: host`로 실행하면 `http://127.0.0.1:8080`으로 보낸다.
+   - 프록시가 일반 Docker 컨테이너이면(예: Nginx Proxy Manager) 그 안의 `127.0.0.1`은 프록시 컨테이너 자신이라 web에 닿지 않는다. 아래 명령으로 프록시 컨테이너를 이 스택의 네트워크(프로젝트 이름 `crs` → 네트워크 `crs_default`)에 붙이고 `http://web:80`으로 보낸다.
+
+     ```sh
+     docker network connect crs_default <프록시 컨테이너 이름>
+     ```
+
+     `docker compose down`은 이 네트워크를 지우므로, 스택을 다시 띄운 뒤에는 이 명령을 다시 실행한다.
+
+   - 프록시가 다른 서버에 있으면 `http://<이 서버 주소>:<WEB_PORT>`로 보낸다.
 6. 프록시가 `Origin` 헤더를 바꾸지 않게 한다. 바뀌면 로그인이 403 `CSRF_CHECK_FAILED`다.
 7. 프록시에 Basic 인증을 걸지 않는다. 앱이 `Authorization: Bearer` 헤더를 쓰므로 충돌한다.
 8. db, redis, api의 포트는 공개하지 않는다(`compose.yaml` 그대로 두면 web만 포트를 연다).
 
 ### 시드 계정 비밀번호 바꾸기
 
-시드 계정 64개(관리자 `A1001` 포함)는 모두 공개된 비밀번호 `Demo-password1!`를 쓴다. 비밀번호 변경 API는 없으므로 DB에 BCrypt 해시를 직접 넣는다. 해시는 `htpasswd`(Apache 유틸리티)로 만든다. 없으면 설치한다(Debian·Ubuntu: `apt install apache2-utils`, root 권한 필요).
+시드 계정 64개(관리자 `A1001` 포함)는 모두 공개된 비밀번호 `Demo-password1!`를 쓴다. 비밀번호 변경 API는 없으므로 DB에 BCrypt 해시를 직접 넣는다. 해시는 `htpasswd`(Apache 유틸리티)로 만든다.
+
+먼저 `htpasswd`를 설치한다(Debian·Ubuntu, 이미 있으면 건너뛴다).
+
+```sh
+sudo apt-get install -y apache2-utils
+```
 
 서버의 bash에서, `compose.yaml`이 있는 폴더에서 관리자 비밀번호를 바꾼다. 입력한 비밀번호는 화면에 보이지 않고 셸 기록이나 명령 인자에 남지 않는다.
 
 ```sh
 read -rsp '새 비밀번호: ' NEWPW; echo
 HASH=$(printf '%s' "$NEWPW" | htpasswd -niBC 10 '' | tr -d ':\n'); unset NEWPW
-docker compose exec db psql -U crs -d crs -c "UPDATE users SET password_hash = '$HASH' WHERE user_id = 'A1001'"
+[ -n "$HASH" ] && docker compose exec db psql -U crs -d crs -c "UPDATE users SET password_hash = '$HASH' WHERE user_id = 'A1001'"
 ```
 
 - 출력이 `UPDATE 1`이면 바뀐 것이다. 이후 새 비밀번호로 로그인되고 `Demo-password1!`은 거부된다.
+- `[ -n "$HASH" ] &&`는 `htpasswd`가 없어 해시가 비었을 때 UPDATE를 실행하지 않게 한다. 빈 `password_hash`가 들어가면 그 계정은 어떤 비밀번호로도 로그인할 수 없게 잠긴다. 아무것도 출력되지 않으면 `htpasswd`가 설치되었는지 확인하고 다시 실행한다.
 - 교수 3명과 학생 60명은 `WHERE` 조건만 바꿔 실행한다. 관리자와 같은 비밀번호면 `$HASH`를 그대로 쓴다. 다른 비밀번호를 쓰려면 그 전에 위의 `read`와 `HASH=` 두 줄을 다시 실행한다.
 
   ```sh
-  docker compose exec db psql -U crs -d crs -c "UPDATE users SET password_hash = '$HASH' WHERE role_cd = 'PROFESSOR'"   # UPDATE 3
-  docker compose exec db psql -U crs -d crs -c "UPDATE users SET password_hash = '$HASH' WHERE role_cd = 'STUDENT'"     # UPDATE 60
+  [ -n "$HASH" ] && docker compose exec db psql -U crs -d crs -c "UPDATE users SET password_hash = '$HASH' WHERE role_cd = 'PROFESSOR'"   # UPDATE 3
+  [ -n "$HASH" ] && docker compose exec db psql -U crs -d crs -c "UPDATE users SET password_hash = '$HASH' WHERE role_cd = 'STUDENT'"     # UPDATE 60
   ```
 
 - 새 비밀번호는 72바이트 이하(영문·숫자 기준 72자 이하)로 정한다. BCrypt는 72바이트까지만 쓴다.
@@ -476,8 +493,8 @@ ORIGIN=http://localhost BASE=http://localhost/api/v1 bash backend/scripts/smoke-
 | `up` 직후 `.env에 JWT_SECRET을 설정하세요` 같은 오류 | `.env`가 `compose.yaml`과 같은 폴더에 없거나 값이 비었다(Windows에서는 `.env.txt`로 저장된 경우도 있다) | "4. `.env` 만들기"를 같은 폴더에서 다시 실행한다 |
 | `up` 중 80번 포트를 열 수 없다는 오류(포트 사용 중) | 다른 프로그램이 80번 포트를 쓴다(Windows에서 흔하다) | `.env`에 `WEB_PORT=8080`, `APP_FRONTEND_ORIGIN=http://localhost:8080`을 넣고 `docker compose up -d --build --wait`, 브라우저는 `http://localhost:8080` |
 | 로그인이 HTTP 403, 응답 본문 `code`가 `E02`, `reason`이 `CSRF_CHECK_FAILED` | 브라우저 출처(예: `http://127.0.0.1`, 다른 포트)가 `APP_FRONTEND_ORIGIN`과 다르다 | `APP_FRONTEND_ORIGIN`에 적은 주소 그대로 접속하거나, `.env`를 고치고 `docker compose up -d --wait` |
-| `up --wait`가 실패하고 api가 healthy가 되지 않는다. `docker compose logs api`에 `Illegal base64 character` | `JWT_SECRET`에 일반 Base64 문자 `+`, `/`가 있다 | 먼저 `docker compose down -v`(DB 데이터 삭제)를 실행하고, 4단계 명령으로 `.env`를 다시 만든 뒤 `docker compose up -d --build --wait` |
-| api 로그에 `JWT secret must contain at least 32 bytes` | `JWT_SECRET`이 너무 짧다 | 먼저 `docker compose down -v`(DB 데이터 삭제)를 실행하고, 4단계 명령으로 `.env`를 다시 만든 뒤(48바이트) `docker compose up -d --build --wait` |
+| `up --wait`가 실패하고 api가 healthy가 되지 않는다. `docker compose logs api`에 `Illegal base64 character` | `JWT_SECRET`에 일반 Base64 문자 `+`, `/`가 있다 | `JWT_SECRET`은 DB와 무관하므로 데이터를 지울 필요가 없다. `.env`의 `JWT_SECRET=` 줄만 새 값으로 바꾸고(macOS·Linux: `openssl rand -base64 48 \| tr '+/' '-_'`의 출력, Windows: 4단계 PowerShell 명령의 1–3줄을 실행한 뒤 `$jwt`의 값) `docker compose up -d --wait`를 실행한다. api가 새 키로 다시 만들어지고 아직 뜨지 않은 web도 뜬다. 처음부터 다시 하려면 `docker compose down -v`(DB 데이터 삭제) 후 4단계와 `docker compose up -d --build --wait` |
+| api 로그에 `JWT secret must contain at least 32 bytes` | `JWT_SECRET`이 너무 짧다 | 위 행과 같다. `.env`의 `JWT_SECRET=` 줄만 48바이트 새 값으로 바꾸고 `docker compose up -d --wait` |
 | api 로그에 `password authentication failed` | DB 볼륨을 만든 뒤 `.env`의 `POSTGRES_PASSWORD`를 바꿨다 | 원래 값으로 되돌린다. 데이터를 버려도 되면 `docker compose down -v` 후 `docker compose up -d --build --wait` |
 | 빌드가 `Killed` 또는 exit code 137로 멈춘다 | Docker에 할당된 메모리가 부족하다 | Docker 메모리를 4 GB 이상으로 늘리고 다시 빌드한다. macOS: Docker Desktop 설정 > Resources > Memory. Windows(WSL 2): `%UserProfile%\.wslconfig`의 `[wsl2]` 아래에 `memory=4GB`를 쓰고 `wsl --shutdown` 후 Docker Desktop을 다시 켠다 |
 | `http://localhost`에서는 로그인되는데 다른 PC나 IP 주소로 HTTP 접속하면 로그인이 유지되지 않는다 | 인증 쿠키가 `Secure`라서 localhost 밖에서는 HTTPS가 필요하다 | "서버에 배포할 때"대로 HTTPS 리버스 프록시를 두고 `APP_FRONTEND_ORIGIN=https://<도메인>`으로 설정한다 |
