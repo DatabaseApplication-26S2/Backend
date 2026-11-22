@@ -348,7 +348,11 @@ Docker가 설치된 Linux 서버에서 같은 `compose.yaml`과 `.env`로 띄운
      docker network connect crs_default <프록시 컨테이너 이름>
      ```
 
-     `docker compose down`은 이 네트워크를 지우므로, 스택을 다시 띄운 뒤에는 이 명령을 다시 실행한다.
+     프록시가 붙어 있으면 `docker compose down`이 `crs_default`를 지우지 못한다(사용 중이라는 경고가 나온다). 그래서 `docker compose down` 전에 먼저 떼고, 스택을 다시 띄운 뒤 위 `docker network connect` 명령으로 다시 붙인다. 다시 붙일 때 `already exists` 오류가 나면 네트워크가 남아 있어 이미 붙어 있다는 뜻이므로 무시한다.
+
+     ```sh
+     docker network disconnect crs_default <프록시 컨테이너 이름>
+     ```
 
    - 프록시가 다른 서버에 있으면 `http://<이 서버 주소>:<WEB_PORT>`로 보낸다.
 6. 프록시가 `Origin` 헤더를 바꾸지 않게 한다. 바뀌면 로그인이 403 `CSRF_CHECK_FAILED`다.
@@ -468,7 +472,7 @@ ORIGIN=http://localhost BASE=http://localhost/api/v1 bash backend/scripts/smoke-
   ORIGIN=https://<도메인> BASE=http://127.0.0.1:8080/api/v1 PASSWORD=<새 비밀번호> bash backend/scripts/smoke-p1.sh
   ```
 
-  명령줄에 쓴 비밀번호는 셸 기록에 남는다. 남기지 않으려면 먼저 `read -rsp '비밀번호: ' PASSWORD; echo; export PASSWORD`를 실행하고 위 명령에서 `PASSWORD=<새 비밀번호>`를 뺀다.
+  명령줄에 쓴 비밀번호는 셸 기록에 남는다. 남기지 않으려면 먼저 `read -rsp '비밀번호: ' PASSWORD; echo; export PASSWORD`를 실행하고 위 명령에서 `PASSWORD=<새 비밀번호>`를 뺀다. 점검이 끝나면 `unset PASSWORD`를 실행해 비밀번호를 셸 환경에서 지운다.
 
 - 처음 실행할 때 교수 `P1001` 담당의 폐강 과목 `SMKCLOSED`를 API로 만든다(시드에 폐강 과목이 없어서). 이 과목은 지우지 않고 남으므로, 공개 서버에서 실행하면 실제 데이터에 `SMKCLOSED`가 생긴다. 스크립트가 만든 수강 내역은 마지막에 스스로 취소하므로 여러 번 실행할 수 있다.
 - `BASE`와 `ORIGIN`을 주지 않으면 개발 모드 기본값(`http://localhost:8080/api/v1`, Origin `http://localhost:5173`)을 대상으로 한다. 개발 모드에서는 이 저장소 폴더에서 `bash scripts/smoke-p1.sh`로 실행한다.
