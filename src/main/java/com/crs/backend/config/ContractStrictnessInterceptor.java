@@ -20,7 +20,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
 
 /**
- * BE-15 계약 엄격성(openapi.yaml 3절 공통 규약).
+ * BE-15 명세 엄격성(openapi.yaml 3절 공통 규약).
  * 정의되지 않은 쿼리 파라미터, 같은 쿼리 파라미터의 반복, 본문을 받지 않는 요청의 본문은 400 E09다.
  * 서버가 대신 무시하지 않는다. (정의되지 않은 본문 필드는 BE-01의 Jackson 설정이 막는다)
  *
@@ -72,7 +72,7 @@ public class ContractStrictnessInterceptor implements HandlerInterceptor {
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
         Rule rule = find(request);
         if (rule == null || rejectedLaterByRoleOrAdmission(request)) {
-            return true; // 계약에 없는 경로·메서드는 Spring이 404·405로 처리한다
+            return true; // 명세에 없는 경로·메서드는 Spring이 404·405로 처리한다
         }
         List<Violation> violations = new ArrayList<>();
         for (Map.Entry<String, Integer> e : queryNames(request.getQueryString()).entrySet()) {

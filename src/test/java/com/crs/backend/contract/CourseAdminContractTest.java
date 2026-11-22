@@ -38,7 +38,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
 /**
- * BE-16(#8b): 과목·학생 신청·교수·관리자 연산 14개의 응답을 동결 계약(contract/openapi.yaml)으로 검증한다.
+ * BE-16(#8b): 과목·학생 신청·교수·관리자 연산 14개의 응답을 동결 명세(contract/openapi.yaml)로 검증한다.
  * 연산마다 성공 1건과 대표 오류 1건을 실제로 호출하고, #8a의 OpenApiResponses.verify로
  * 선언된 상태 코드·헤더·콘텐츠 타입·본문 스키마(JSON Schema 2020-12, 형식 검사 포함)를 확인한다.
  * 인증 연산 6개는 AuthIntegrationTest(#8a)가 검증한다. 둘을 합쳐 20개 연산이다.
@@ -140,7 +140,7 @@ class CourseAdminContractTest {
                 .contains("QC100", "QC200", "QC400", "QC500").doesNotContain("QC300"); // 담당 과목만, 폐강 포함
         contract("/professor/courses", "get", get("/api/v1/professor/courses").header("Authorization", admittedStudent()), 403);
 
-        String create = "{\"courseCode\":\"QC600\",\"name\":\"계약 점검\",\"category\":\"MAJOR\",\"evaluationType\":\"ABSOLUTE\","
+        String create = "{\"courseCode\":\"QC600\",\"name\":\"명세 점검\",\"category\":\"MAJOR\",\"evaluationType\":\"ABSOLUTE\","
                 + "\"capacity\":20,\"minimumEnrollment\":3,\"classroom\":\"점검실\"}";
         contract("/professor/courses", "post", post("/api/v1/professor/courses").header("Authorization", prof)
                 .contentType("application/json").content(create), 201);
@@ -234,7 +234,7 @@ class CourseAdminContractTest {
 
     // ===================== 도우미 =====================
 
-    /** 요청을 보내 상태 코드를 확인하고, 응답 전체를 동결 계약으로 검증한다(#8a와 같은 방식) */
+    /** 요청을 보내 상태 코드를 확인하고, 응답 전체를 동결 명세로 검증한다(#8a와 같은 방식) */
     private MockHttpServletResponse contract(String path, String method, MockHttpServletRequestBuilder request,
                                              int expectedStatus) throws Exception {
         MockHttpServletResponse response = mvc.perform(request).andExpect(status().is(expectedStatus)).andReturn().getResponse();

@@ -17,7 +17,7 @@ import org.springframework.http.ResponseEntity;
  * 오류 응답 본문(RFC 9457 Problem Details)을 만드는 유일한 곳이다(BE-01).
  * 컨트롤러 예외(GlobalExceptionHandler)와 필터 예외(AuthSecurity)가 모두 이 클래스를 쓴다.
  *
- * 계약: openapi.yaml 6절 오류 규약, components.schemas.ProblemDetails
+ * API 명세: openapi.yaml 6절 오류 규약, components.schemas.ProblemDetails
  * - type = urn:crs:problem:{code}, status = HTTP 상태
  * - reason은 E02에만, activeTicketId는 E03에만, violations는 E09에 필수
  * - 모든 오류 응답에 Cache-Control: no-store, 401에는 WWW-Authenticate
@@ -87,7 +87,7 @@ public record ApiProblem(int status, String code, String detail, String reason,
     }
 
     /**
-     * AuthFailure(status, code)를 계약 형식으로 바꾼다.
+     * AuthFailure(status, code)를 명세 형식으로 바꾼다.
      * code가 E01·E02 같은 결과 코드면 그대로, LOGIN_PROOF_INVALID 같은 사유면 E02 + reason으로 옮긴다.
      */
     public static ApiProblem fromAuthFailure(int status, String rawCode) {

@@ -4,7 +4,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 
 /**
  * 과목 응답 1건(openapi.yaml components.schemas.Course).
- * DB 컬럼 이름이 아니라 계약서의 JSON 필드 이름을 쓴다.
+ * DB 컬럼 이름이 아니라 API 명세의 JSON 필드 이름을 쓴다.
  *
  * enrolled는 학생이 호출할 때만 넣는다. 교수·관리자 응답에는 필드 자체가 없어야 하므로
  * null이면 JSON에서 뺀다.

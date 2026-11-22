@@ -491,7 +491,7 @@ ORIGIN=http://localhost BASE=http://localhost/api/v1 bash backend/scripts/smoke-
 - Redis: 대기 순번 사본(`waiting_queue`)만 둔다. 기준은 DB의 대기 티켓이고, api가 기동할 때와 10초마다 DB 기준으로 다시 맞춘다. 실행 전에 Redis가 떠 있어야 한다.
 - 보안 설정: `auth/AuthSecurity` (쿠키 연산의 Origin 검사, Bearer 토큰 인증)
 - 상태 확인: `/actuator/health`만 공개한다.
-- API 계약: `src/test/resources/contract/openapi.yaml` (Frontend 저장소의 `openapi.yaml`과 같은 파일)
+- API 명세: `src/test/resources/contract/openapi.yaml` (Frontend 저장소의 `openapi.yaml`과 같은 파일)
 
 ## 문제 해결
 

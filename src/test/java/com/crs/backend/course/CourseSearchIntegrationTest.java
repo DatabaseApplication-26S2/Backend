@@ -36,7 +36,7 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.test.web.servlet.MockMvc;
 
 /**
- * BE-07 GET /api/v1/courses 계약 확인(openapi.yaml searchCourses).
+ * BE-07 GET /api/v1/courses 명세 확인(openapi.yaml searchCourses).
  * 실제 PostgreSQL(Testcontainers)에 테스트 데이터를 넣고, 실제 로그인 토큰으로 호출한다.
  * 다른 테스트의 데이터와 섞이지 않게 테스트 과목코드는 모두 QZ로 시작하고 검색어 q=QZ로 조회한다.
  */
@@ -276,7 +276,7 @@ class CourseSearchIntegrationTest {
                 .andExpect(jsonPath("$.items[1].classroom").value("공학관 301"))
                 .andExpect(jsonPath("$.items[1].status").value("ENROLLED"))
                 .andExpect(jsonPath("$.items[1].enrolledAt").value(org.hamcrest.Matchers.endsWith("Z")))
-                // 계약에 없는 필드는 내보내지 않는다
+                // 명세에 없는 필드는 내보내지 않는다
                 .andExpect(jsonPath("$.items[1].capacity").doesNotExist())
                 .andExpect(jsonPath("$.items[1].studentId").doesNotExist());
     }
@@ -370,7 +370,7 @@ class CourseSearchIntegrationTest {
                 .andExpect(status().isUnauthorized());
     }
 
-    // ---------------- BE-15 계약 엄격성 ----------------
+    // ---------------- BE-15 명세 엄격성 ----------------
 
     @Test
     void 정의되지_않은_쿼리_파라미터는_400_E09() throws Exception {

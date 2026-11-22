@@ -90,7 +90,7 @@ run_p23() {
   # ===================== 20. PUT /admin/settings =====================
   echo "[20] 서비스 설정 변경 PUT /admin/settings"
   if [ -n "$N" ]; then
-    # 같은 값은 변경자를 기록하지 않으므로(계약) 1만큼 바꿔 확인하고 곧바로 원래 N으로 되돌린다
+    # 같은 값은 변경자를 기록하지 않으므로(명세) 1만큼 바꿔 확인하고 곧바로 원래 N으로 되돌린다
     local N2; if [ "$N" -ge 1000 ]; then N2=$((N - 1)); else N2=$((N + 1)); fi
     req PUT /admin/settings "{\"concurrencyLimit\":$N2}" "${AA[@]}"
     check "200, 새 N과 변경자 기록(lastChangedBy)" \
