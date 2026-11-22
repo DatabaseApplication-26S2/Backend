@@ -235,7 +235,7 @@ curl.exe -s http://localhost/api/v1/courses
 
 Chrome에서 `http://localhost`(포트를 바꿨다면 `http://localhost:8080`)를 연다. 아래 "시연 계정"으로 로그인한다.
 
-- 인증 쿠키는 `__Host-` 접두사가 붙은 `Secure` 쿠키다. 브라우저는 `http://localhost`에서는 이 쿠키를 받지만, localhost가 아닌 주소(다른 PC의 IP, 도메인)로 HTTP 접속하면 로그인이 유지되지 않는다. 그런 경우는 "서버에 배포할 때"를 본다.
+- 인증 쿠키는 `__Host-` 접두사가 붙은 `Secure` 쿠키다. 브라우저는 `http://localhost`에서는 이 쿠키를 받지만, localhost가 아닌 주소(다른 PC의 IP, 도메인)로 HTTP 접속하면 로그인 쿠키 `__Host-crs_login`을 버린다. 그래서 로그인이 끝나지 않는다(로그인 티켓 조회가 403 `E02`). 그런 경우는 "서버에 배포할 때"를 본다.
 - `http://127.0.0.1`처럼 `APP_FRONTEND_ORIGIN`과 다른 주소로 열면 로그인이 403이 된다. 설정한 주소 그대로 연다.
 - localhost에서의 쿠키 동작은 Chrome에서만 확인했으므로 Chrome을 쓴다.
 
@@ -294,7 +294,7 @@ Frontend 저장소의 목(mock) 서버(`pnpm dev:mock`, MSW)는 이 백엔드와
 | `docker compose down` | 컨테이너와 네트워크를 지운다. DB 볼륨(데이터)은 남는다 |
 | `docker compose down -v` | DB 볼륨까지 지운다. 다음 `docker compose up -d --build --wait`에서 시드를 처음부터 다시 적용한다 |
 
-저장소를 `git pull`로 갱신한 뒤에는 `docker compose up -d --build --wait`로 다시 빌드한다.
+저장소를 `git pull`로 갱신한 뒤에는 `docker compose up -d --build --wait`로 다시 빌드한다. `git pull`은 이 README에서 복사해 둔 최상위 `compose.yaml`을 갱신하지 않는다. README의 compose 블록이 바뀌었으면 다시 복사해 저장한다.
 
 ### 시연 데이터만 되돌리기
 
@@ -376,12 +376,13 @@ sudo apt-get install -y apache2-utils
 
 ```sh
 read -rsp '새 비밀번호: ' NEWPW; echo
-HASH=$(printf '%s' "$NEWPW" | htpasswd -niBC 10 '' | tr -d ':\n'); unset NEWPW
+HASH=; [ -n "$NEWPW" ] && HASH=$(printf '%s' "$NEWPW" | htpasswd -niBC 10 '' | tr -d ':\n'); unset NEWPW
 [ -n "$HASH" ] && docker compose exec db psql -U crs -d crs -c "UPDATE users SET password_hash = '$HASH' WHERE user_id = 'A1001'"
 ```
 
 - 출력이 `UPDATE 1`이면 바뀐 것이다. 이후 새 비밀번호로 로그인되고 `Demo-password1!`은 거부된다.
-- `[ -n "$HASH" ] &&`는 `htpasswd`가 없어 해시가 비었을 때 UPDATE를 실행하지 않게 한다. 빈 `password_hash`가 들어가면 그 계정은 어떤 비밀번호로도 로그인할 수 없게 잠긴다. 아무것도 출력되지 않으면 `htpasswd`가 설치되었는지 확인하고 다시 실행한다.
+- `HASH=`는 이전에 실행했던 해시 값을 먼저 비운다. 비밀번호를 입력하지 않고 Enter만 누르면 해시를 만들지 않고, `[ -n "$HASH" ] &&`가 해시가 비었을 때 UPDATE를 실행하지 않게 한다. 빈 비밀번호의 해시나 빈 `password_hash`가 들어가면 그 계정은 로그인할 수 없게 잠긴다.
+- `htpasswd`가 없으면 bash가 `htpasswd: command not found`를 출력하고 `UPDATE` 줄은 나오지 않는다. `apache2-utils`를 설치하고 세 줄을 다시 실행한다. Enter만 눌렀을 때도 `UPDATE` 줄이 나오지 않으므로 다시 실행한다.
 - 교수 3명과 학생 60명은 `WHERE` 조건만 바꿔 실행한다. 관리자와 같은 비밀번호면 `$HASH`를 그대로 쓴다. 다른 비밀번호를 쓰려면 그 전에 위의 `read`와 `HASH=` 두 줄을 다시 실행한다.
 
   ```sh
@@ -505,7 +506,7 @@ ORIGIN=http://localhost BASE=http://localhost/api/v1 bash backend/scripts/smoke-
 | api 로그에 `JWT secret must contain at least 32 bytes` | `JWT_SECRET`이 너무 짧다 | 위 행과 같다. `.env`의 `JWT_SECRET=` 줄만 48바이트 새 값으로 바꾸고 `docker compose up -d --wait` |
 | api 로그에 `password authentication failed` | DB 볼륨을 만든 뒤 `.env`의 `POSTGRES_PASSWORD`를 바꿨다 | 원래 값으로 되돌린다. 데이터를 버려도 되면 `docker compose down -v` 후 `docker compose up -d --build --wait` |
 | 빌드가 `Killed` 또는 exit code 137로 멈춘다 | Docker에 할당된 메모리가 부족하다 | Docker 메모리를 4 GB 이상으로 늘리고 다시 빌드한다. macOS: Docker Desktop 설정 > Resources > Memory. Windows(WSL 2): `%UserProfile%\.wslconfig`의 `[wsl2]` 아래에 `memory=4GB`를 쓰고 `wsl --shutdown` 후 Docker Desktop을 다시 켠다 |
-| `http://localhost`에서는 로그인되는데 다른 PC나 IP 주소로 HTTP 접속하면 로그인이 유지되지 않는다 | 인증 쿠키가 `Secure`라서 localhost 밖에서는 HTTPS가 필요하다 | "서버에 배포할 때"대로 HTTPS 리버스 프록시를 두고 `APP_FRONTEND_ORIGIN=https://<도메인>`으로 설정한다 |
+| `http://localhost`에서는 로그인되는데 다른 PC나 IP 주소로 HTTP 접속하면 로그인이 끝나지 않는다(로그인 티켓 조회가 403 `E02`) | 인증 쿠키가 `Secure`라서 브라우저가 HTTP에서는 로그인 쿠키 `__Host-crs_login`을 버린다. localhost 밖에서는 HTTPS가 필요하다 | "서버에 배포할 때"대로 HTTPS 리버스 프록시를 두고 `APP_FRONTEND_ORIGIN=https://<도메인>`으로 설정한다 |
 
 ## 주의
 
