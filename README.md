@@ -79,7 +79,7 @@ services:
       # 볼륨을 처음 만들 때만 적용된다. 나중에 바꾸려면 볼륨을 지우고 다시 만든다.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?.env에 POSTGRES_PASSWORD를 설정하세요}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U crs -d crs"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U crs -d crs"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -209,11 +209,20 @@ docker compose ps
 - `--wait`는 모든 컨테이너가 healthy가 되면 끝난다. 오류로 끝나면 아래 "문제 해결"을 본다.
 - `docker compose ps`에서 `db`, `redis`, `api`, `web` 네 개의 STATUS가 모두 `(healthy)`여야 한다.
 
-명령줄로 응답을 확인할 수도 있다(Windows PowerShell에서는 `curl` 대신 `curl.exe`를 쓴다).
+명령줄로 응답을 확인할 수도 있다.
+
+macOS·Linux(터미널):
 
 ```sh
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost/
 curl -s http://localhost/api/v1/courses
+```
+
+Windows(PowerShell):
+
+```powershell
+curl.exe -s -o NUL -w "%{http_code}\n" http://localhost/
+curl.exe -s http://localhost/api/v1/courses
 ```
 
 - 첫 줄은 `200`을 출력한다(웹 화면).
@@ -244,7 +253,7 @@ api가 `local` 또는 `demo` 프로파일로 처음 기동할 때 Flyway 시드(
 - 과목: `DEMO01`–`DEMO25`. `DEMO01`은 정원 3명, `DEMO02`는 정원 1명이다.
 - 사전 수강: 학생 `20260001`이 `DEMO03`에 관리자 `A1001`의 배정으로 들어가 있다.
 - 동시 처리 한도 N의 초깃값은 100이다.
-- 비밀번호는 공개된 시연용 값이다. 시연 DB에서만 쓴다.
+- 비밀번호는 공개된 시연용 값이다. localhost 밖에 공개하는 서버에서는 "서버에 배포할 때"의 "시드 계정 비밀번호 바꾸기"대로 먼저 바꾼다.
 
 Frontend 저장소의 목(mock) 서버(`pnpm dev:mock`, MSW)는 이 백엔드와 별개의 목 전용 계정을 쓴다. 목 서버의 관리자는 `A0001` / `crs-demo-1234`이고(Frontend 저장소의 `src/mocks/seed.ts`), 이 계정은 이 백엔드에서 로그인되지 않는다. 반대로 위 표의 계정은 목 서버에서 쓰지 않는다.
 
@@ -308,14 +317,39 @@ docker compose up -d --wait api
 
 ## 서버에 배포할 때
 
-같은 `compose.yaml`과 `.env`로 Docker가 설치된 Linux 서버에서 띄운다. localhost가 아닌 주소에서는 HTTPS가 있어야 로그인이 된다.
+같은 `compose.yaml`과 `.env`로 Docker가 설치된 Linux 서버에서 띄운다. localhost가 아닌 주소에서는 HTTPS가 있어야 로그인이 된다. 아래 명령은 서버의 bash에서 `compose.yaml`이 있는 폴더에서 실행한다.
 
-1. TLS를 종료하는 리버스 프록시(예: Nginx Proxy Manager, Caddy, nginx)를 web의 포트(`WEB_PORT`) 앞에 둔다.
-2. `.env`에 `APP_FRONTEND_ORIGIN=https://<도메인>`을 설정하고 `docker compose up -d --build --wait`로 반영한다.
-3. 프록시에서 HTTPS를 강제한다(HTTP 요청은 HTTPS로 리다이렉트).
-4. 프록시가 `Origin` 헤더를 바꾸지 않게 한다. 바뀌면 로그인이 403 `CSRF_CHECK_FAILED`다.
-5. 프록시에 Basic 인증을 걸지 않는다. 앱이 `Authorization: Bearer` 헤더를 쓰므로 충돌한다.
-6. db, redis, api의 포트는 공개하지 않는다(`compose.yaml` 그대로 두면 web만 포트를 연다).
+1. `.env`에 `APP_FRONTEND_ORIGIN=https://<도메인>`을 설정하고 `docker compose up -d --build --wait`로 띄운다.
+2. 외부에 공개하기 전에(방화벽을 열거나 프록시를 연결하기 전에) 시드 계정의 비밀번호를 바꾼다. 아래 "시드 계정 비밀번호 바꾸기"를 본다.
+3. TLS를 종료하는 리버스 프록시(예: Nginx Proxy Manager, Caddy, nginx)를 web의 포트(`WEB_PORT`) 앞에 둔다.
+4. 프록시에서 HTTPS를 강제한다(HTTP 요청은 HTTPS로 리다이렉트).
+5. 프록시가 `Origin` 헤더를 바꾸지 않게 한다. 바뀌면 로그인이 403 `CSRF_CHECK_FAILED`다.
+6. 프록시에 Basic 인증을 걸지 않는다. 앱이 `Authorization: Bearer` 헤더를 쓰므로 충돌한다.
+7. db, redis, api의 포트는 공개하지 않는다(`compose.yaml` 그대로 두면 web만 포트를 연다).
+
+### 시드 계정 비밀번호 바꾸기
+
+시드 계정 64개(관리자 `A1001` 포함)는 모두 공개된 비밀번호 `Demo-password1!`를 쓴다. 비밀번호 변경 API는 없으므로 DB에 BCrypt 해시를 직접 넣는다. 해시는 `htpasswd`(Apache 유틸리티)로 만든다.
+
+Linux 서버(bash), `compose.yaml`이 있는 폴더에서 관리자 비밀번호를 바꾼다.
+
+```sh
+HASH=$(htpasswd -nbBC 10 '' '<새 비밀번호>' | tr -d ':\n')     # Debian·Ubuntu: apt install apache2-utils
+docker compose exec db psql -U crs -d crs -c "UPDATE users SET password_hash = '$HASH' WHERE user_id = 'A1001'"
+```
+
+- 출력이 `UPDATE 1`이면 바뀐 것이다. 이후 새 비밀번호로 로그인되고 `Demo-password1!`은 거부된다.
+- 교수 3명과 학생 60명은 `WHERE` 조건만 바꿔 실행한다. 그룹마다 다른 비밀번호를 쓰려면 그 전에 `HASH=` 줄을 새 비밀번호로 다시 실행한다.
+
+  ```sh
+  docker compose exec db psql -U crs -d crs -c "UPDATE users SET password_hash = '$HASH' WHERE role_cd = 'PROFESSOR'"   # UPDATE 3
+  docker compose exec db psql -U crs -d crs -c "UPDATE users SET password_hash = '$HASH' WHERE role_cd = 'STUDENT'"     # UPDATE 60
+  ```
+
+- 비밀번호에는 작은따옴표(`'`)를 넣지 않는다. 명령의 따옴표가 깨진다.
+- `htpasswd`가 만드는 `$2y$` 형식 해시를 그대로 쓴다.
+- `docker compose down -v`로 DB 볼륨을 지우면 다음 기동에서 시드가 다시 들어가 비밀번호가 `Demo-password1!`로 돌아간다. 그때는 이 절차를 다시 실행한다.
+- 바꾼 뒤에는 점검 스크립트(`smoke-p1.sh`)가 시드 비밀번호로 로그인하지 못한다. 점검은 바꾸기 전에 끝낸다.
 
 ## 개발 모드 실행
 
@@ -387,7 +421,7 @@ ORIGIN=http://localhost BASE=http://localhost/api/v1 bash backend/scripts/smoke-
 ```
 
 - 모두 통과하면 마지막 줄이 `모든 점검 통과: 27/27`이고 종료 코드는 0이다. 하나라도 실패하면 실패 목록을 출력하고 종료 코드 1로 끝난다.
-- 시드 비밀번호 `Demo-password1!`로 로그인하므로 시드 계정의 비밀번호를 바꾸기 전에 실행한다.
+- 시드 비밀번호 `Demo-password1!`로 로그인하므로, "서버에 배포할 때"의 "시드 계정 비밀번호 바꾸기"를 실행하기 전에 돌린다.
 - 처음 실행할 때 폐강 과목 `SMKCLOSED`를 API로 만든다(시드에 폐강 과목이 없어서). 스크립트가 만든 수강 내역은 마지막에 스스로 취소하므로 여러 번 실행할 수 있다.
 - `WEB_PORT`를 바꿨다면 두 값도 바꾼다. 예: `ORIGIN=http://localhost:8080 BASE=http://localhost:8080/api/v1`.
 - `BASE`와 `ORIGIN`을 주지 않으면 개발 모드 기본값(`http://localhost:8080/api/v1`, Origin `http://localhost:5173`)을 대상으로 한다. 개발 모드에서는 이 저장소 폴더에서 `bash scripts/smoke-p1.sh`로 실행한다.
