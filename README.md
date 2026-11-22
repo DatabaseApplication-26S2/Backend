@@ -314,9 +314,10 @@ docker compose up -d --wait api
 - 티켓 번호를 1부터 다시 매기고, 과목별 수강 인원을 0으로 되돌린다.
 - 동시 처리 한도 N을 2로 둔다(시드 초깃값 100이 아니다).
 - 계정과 과목은 그대로 둔다. 시드의 사전 수강(`20260001` → `DEMO03`)은 다시 만들지 않는다.
+- 과목 상태(`course_status`)는 건드리지 않는다. 시연 중 폐강한 과목은 `CLOSED`로 남고, 점검 스크립트가 만든 폐강 과목 `SMKCLOSED`도 남는다.
 - 마지막 점검 조회가 `(0 rows)`를 출력하면 수강 인원과 실제 수강 내역이 일치한다는 뜻이다.
 
-시드 직후 상태(N = 100, 사전 수강 포함)로 완전히 되돌리려면 `docker compose down -v` 후 `docker compose up -d --build --wait`를 실행한다.
+시드 직후 상태(N = 100, 사전 수강 포함, 시연 중 폐강·추가한 과목 없음)로 완전히 되돌리려면 `docker compose down -v` 후 `docker compose up -d --build --wait`를 실행한다.
 
 ## 서버에 배포할 때
 
@@ -451,7 +452,8 @@ Docker가 켜져 있어야 한다. Testcontainers가 PostgreSQL 17과 Redis 7을
 .\gradlew.bat build redisTest      # Windows
 ```
 
-- `test` 작업은 `test` 프로파일로 돌고 `redis` 태그를 뺀다. `redisTest` 작업은 `redis` 태그 테스트를 `demo` 프로파일과 실제 시드 계정으로 돌린다.
+- `test` 작업은 `redis` 태그가 없는 테스트를 돌린다. 통합 테스트는 `test` 프로파일(스키마만, 시드 없음)로 뜬다.
+- `redisTest` 작업은 `redis` 태그가 붙은 두 테스트를 돌린다. `RealRedisIntegrationTest`는 `demo` 프로파일과 실제 시드 계정을 쓰고, `RedisReconciliationIntegrationTest`는 `test` 프로파일(시드 없음)을 쓴다.
 - 결과 보고서: `build/reports/tests/test/index.html`, `build/reports/tests/redisTest/index.html`.
 - 자세한 범위는 `TESTING.md`(영문)를 본다.
 
