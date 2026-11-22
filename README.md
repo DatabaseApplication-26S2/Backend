@@ -265,7 +265,7 @@ Frontend 저장소의 목(mock) 서버(`pnpm dev:mock`, MSW)는 이 백엔드와
 |---|---|---|---|
 | `JWT_SECRET` | 필수 | 없음 | Access JWT(HS256) 서명 키. URL-safe Base64, 디코딩해서 32바이트 이상. api의 `AUTH_JWT_SECRET`으로 들어간다 |
 | `POSTGRES_PASSWORD` | 필수 | 없음 | PostgreSQL 비밀번호. DB 볼륨을 처음 만들 때만 적용된다. api의 `SPRING_DATASOURCE_PASSWORD`로도 들어간다 |
-| `WEB_PORT` | 선택 | `80` | 웹 화면을 공개할 호스트 포트(web 컨테이너의 80번에 연결) |
+| `WEB_PORT` | 선택 | `80` | 웹 화면을 공개할 호스트 포트(web 컨테이너의 80번에 연결). `127.0.0.1:8080`처럼 주소를 붙이면 그 주소에서만 연다 |
 | `APP_FRONTEND_ORIGIN` | 선택 | `http://localhost` | 브라우저가 접속하는 출처. 정확히 같아야 한다. 예: `WEB_PORT=8080`이면 `http://localhost:8080` |
 
 ### api 컨테이너·프로세스 (Spring Boot)
@@ -317,39 +317,55 @@ docker compose up -d --wait api
 
 ## 서버에 배포할 때
 
-같은 `compose.yaml`과 `.env`로 Docker가 설치된 Linux 서버에서 띄운다. localhost가 아닌 주소에서는 HTTPS가 있어야 로그인이 된다. 아래 명령은 서버의 bash에서 `compose.yaml`이 있는 폴더에서 실행한다.
+Docker가 설치된 Linux 서버에서 같은 `compose.yaml`과 `.env`로 띄운다. 서버에서도 "전체 스택 실행"의 1–4단계(설치, 클론, `compose.yaml` 저장, `.env` 만들기)를 똑같이 한다. localhost가 아닌 주소에서는 HTTPS가 있어야 브라우저 로그인이 된다. 아래 명령은 서버의 bash에서 `compose.yaml`이 있는 폴더에서 실행한다.
 
-1. `.env`에 `APP_FRONTEND_ORIGIN=https://<도메인>`을 설정하고 `docker compose up -d --build --wait`로 띄운다.
-2. 외부에 공개하기 전에(방화벽을 열거나 프록시를 연결하기 전에) 시드 계정의 비밀번호를 바꾼다. 아래 "시드 계정 비밀번호 바꾸기"를 본다.
-3. TLS를 종료하는 리버스 프록시(예: Nginx Proxy Manager, Caddy, nginx)를 web의 포트(`WEB_PORT`) 앞에 둔다.
-4. 프록시에서 HTTPS를 강제한다(HTTP 요청은 HTTPS로 리다이렉트).
-5. 프록시가 `Origin` 헤더를 바꾸지 않게 한다. 바뀌면 로그인이 403 `CSRF_CHECK_FAILED`다.
-6. 프록시에 Basic 인증을 걸지 않는다. 앱이 `Authorization: Bearer` 헤더를 쓰므로 충돌한다.
-7. db, redis, api의 포트는 공개하지 않는다(`compose.yaml` 그대로 두면 web만 포트를 연다).
+시드 계정의 비밀번호는 공개되어 있고, HTTP로도 curl 같은 도구로 `Origin`·`X-CSRF-Protection` 헤더를 붙여 API에 로그인할 수 있다. 그러므로 web 포트를 공개하기 전에 비밀번호를 바꾼다. Linux의 ufw·firewalld는 Docker가 공개한 포트를 막지 못하므로 호스트 방화벽에 기대지 않는다.
+
+1. `.env`에 `APP_FRONTEND_ORIGIN=https://<도메인>`을 넣고, `WEB_PORT`는 리버스 프록시의 위치에 따라 정한다.
+   - 프록시가 같은 서버에 있으면 `WEB_PORT=127.0.0.1:8080`을 넣는다. compose의 `"${WEB_PORT:-80}:80"`이 `127.0.0.1:8080:80`이 되어 web은 그 서버 안에서만 닿는다. 프록시는 `http://127.0.0.1:8080`으로 보낸다.
+   - 프록시가 다른 서버에 있으면 네트워크·하이퍼바이저 방화벽에서 web 포트를 프록시의 IP만 허용하도록 막는다.
+2. db, redis, api만 띄운다. 이 단계에서는 어떤 포트도 공개되지 않는다.
+
+   ```sh
+   docker compose up -d --build --wait api
+   ```
+
+3. 시드 계정의 비밀번호를 바꾼다. 아래 "시드 계정 비밀번호 바꾸기"를 본다.
+4. web을 띄운다.
+
+   ```sh
+   docker compose up -d --build --wait web
+   ```
+
+5. TLS를 종료하는 리버스 프록시(예: Nginx Proxy Manager, Caddy, nginx)를 web의 포트 앞에 두고 HTTPS를 강제한다(HTTP 요청은 HTTPS로 리다이렉트).
+6. 프록시가 `Origin` 헤더를 바꾸지 않게 한다. 바뀌면 로그인이 403 `CSRF_CHECK_FAILED`다.
+7. 프록시에 Basic 인증을 걸지 않는다. 앱이 `Authorization: Bearer` 헤더를 쓰므로 충돌한다.
+8. db, redis, api의 포트는 공개하지 않는다(`compose.yaml` 그대로 두면 web만 포트를 연다).
 
 ### 시드 계정 비밀번호 바꾸기
 
-시드 계정 64개(관리자 `A1001` 포함)는 모두 공개된 비밀번호 `Demo-password1!`를 쓴다. 비밀번호 변경 API는 없으므로 DB에 BCrypt 해시를 직접 넣는다. 해시는 `htpasswd`(Apache 유틸리티)로 만든다.
+시드 계정 64개(관리자 `A1001` 포함)는 모두 공개된 비밀번호 `Demo-password1!`를 쓴다. 비밀번호 변경 API는 없으므로 DB에 BCrypt 해시를 직접 넣는다. 해시는 `htpasswd`(Apache 유틸리티)로 만든다. 없으면 설치한다(Debian·Ubuntu: `apt install apache2-utils`, root 권한 필요).
 
-Linux 서버(bash), `compose.yaml`이 있는 폴더에서 관리자 비밀번호를 바꾼다.
+서버의 bash에서, `compose.yaml`이 있는 폴더에서 관리자 비밀번호를 바꾼다. 입력한 비밀번호는 화면에 보이지 않고 셸 기록이나 명령 인자에 남지 않는다.
 
 ```sh
-HASH=$(htpasswd -nbBC 10 '' '<새 비밀번호>' | tr -d ':\n')     # Debian·Ubuntu: apt install apache2-utils
+read -rsp '새 비밀번호: ' NEWPW; echo
+HASH=$(printf '%s' "$NEWPW" | htpasswd -niBC 10 '' | tr -d ':\n'); unset NEWPW
 docker compose exec db psql -U crs -d crs -c "UPDATE users SET password_hash = '$HASH' WHERE user_id = 'A1001'"
 ```
 
 - 출력이 `UPDATE 1`이면 바뀐 것이다. 이후 새 비밀번호로 로그인되고 `Demo-password1!`은 거부된다.
-- 교수 3명과 학생 60명은 `WHERE` 조건만 바꿔 실행한다. 그룹마다 다른 비밀번호를 쓰려면 그 전에 `HASH=` 줄을 새 비밀번호로 다시 실행한다.
+- 교수 3명과 학생 60명은 `WHERE` 조건만 바꿔 실행한다. 관리자와 같은 비밀번호면 `$HASH`를 그대로 쓴다. 다른 비밀번호를 쓰려면 그 전에 위의 `read`와 `HASH=` 두 줄을 다시 실행한다.
 
   ```sh
   docker compose exec db psql -U crs -d crs -c "UPDATE users SET password_hash = '$HASH' WHERE role_cd = 'PROFESSOR'"   # UPDATE 3
   docker compose exec db psql -U crs -d crs -c "UPDATE users SET password_hash = '$HASH' WHERE role_cd = 'STUDENT'"     # UPDATE 60
   ```
 
-- 비밀번호에는 작은따옴표(`'`)를 넣지 않는다. 명령의 따옴표가 깨진다.
+- `read`는 입력 앞뒤의 공백을 지운다. 비밀번호 앞뒤에 공백을 넣지 않는다.
 - `htpasswd`가 만드는 `$2y$` 형식 해시를 그대로 쓴다.
-- `docker compose down -v`로 DB 볼륨을 지우면 다음 기동에서 시드가 다시 들어가 비밀번호가 `Demo-password1!`로 돌아간다. 그때는 이 절차를 다시 실행한다.
-- 바꾼 뒤에는 점검 스크립트(`smoke-p1.sh`)가 시드 비밀번호로 로그인하지 못한다. 점검은 바꾸기 전에 끝낸다.
+- `docker compose down -v`로 DB 볼륨을 지우면 다음 기동에서 시드가 다시 들어가 비밀번호가 `Demo-password1!`로 돌아간다. 그때는 위 2–4단계처럼 api까지만 띄우고(`docker compose up -d --build --wait api`) 이 절차를 다시 실행한 뒤 web을 띄운다.
+- 바꾼 뒤 점검 스크립트를 돌리는 조건은 "테스트와 점검 스크립트"의 "전체 스택 점검(smoke) 스크립트"를 본다.
 
 ## 개발 모드 실행
 
@@ -421,8 +437,9 @@ ORIGIN=http://localhost BASE=http://localhost/api/v1 bash backend/scripts/smoke-
 ```
 
 - 모두 통과하면 마지막 줄이 `모든 점검 통과: 27/27`이고 종료 코드는 0이다. 하나라도 실패하면 실패 목록을 출력하고 종료 코드 1로 끝난다.
-- 시드 비밀번호 `Demo-password1!`로 로그인하므로, "서버에 배포할 때"의 "시드 계정 비밀번호 바꾸기"를 실행하기 전에 돌린다.
-- 처음 실행할 때 폐강 과목 `SMKCLOSED`를 API로 만든다(시드에 폐강 과목이 없어서). 스크립트가 만든 수강 내역은 마지막에 스스로 취소하므로 여러 번 실행할 수 있다.
+- 기본값으로 시드 비밀번호 `Demo-password1!`를 써서 학생 `20260003`·`20260002`, 교수 `P1001`, 관리자 `A1001`로 로그인한다. 그래서 "시드 계정 비밀번호 바꾸기"를 실행하기 전에 돌린다. 바꾼 뒤에는 이 네 계정이 모두 같은 새 비밀번호일 때만 환경 변수 `PASSWORD=<새 비밀번호>`를 더해 실행할 수 있다.
+- 점검 중 학생 `20260002`의 세션은 폐기된다(갱신 토큰 재사용 탐지 점검).
+- 처음 실행할 때 교수 `P1001` 담당의 폐강 과목 `SMKCLOSED`를 API로 만든다(시드에 폐강 과목이 없어서). 이 과목은 지우지 않고 남으므로, 공개 서버에서 실행하면 실제 데이터에 `SMKCLOSED`가 생긴다. 스크립트가 만든 수강 내역은 마지막에 스스로 취소하므로 여러 번 실행할 수 있다.
 - `WEB_PORT`를 바꿨다면 두 값도 바꾼다. 예: `ORIGIN=http://localhost:8080 BASE=http://localhost:8080/api/v1`.
 - `BASE`와 `ORIGIN`을 주지 않으면 개발 모드 기본값(`http://localhost:8080/api/v1`, Origin `http://localhost:5173`)을 대상으로 한다. 개발 모드에서는 이 저장소 폴더에서 `bash scripts/smoke-p1.sh`로 실행한다.
 
