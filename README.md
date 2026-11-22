@@ -364,7 +364,7 @@ docker compose exec db psql -U crs -d crs -c "UPDATE users SET password_hash = '
 
 - `read`는 입력 앞뒤의 공백을 지운다. 비밀번호 앞뒤에 공백을 넣지 않는다.
 - `htpasswd`가 만드는 `$2y$` 형식 해시를 그대로 쓴다.
-- `docker compose down -v`로 DB 볼륨을 지우면 다음 기동에서 시드가 다시 들어가 비밀번호가 `Demo-password1!`로 돌아간다. 그때는 위 2–4단계처럼 api까지만 띄우고(`docker compose up -d --build --wait api`) 이 절차를 다시 실행한 뒤 web을 띄운다.
+- `docker compose down -v`로 DB 볼륨을 지우면 다음 기동에서 시드가 다시 들어가 비밀번호가 `Demo-password1!`로 돌아간다. 그때는 이 절("서버에 배포할 때")의 2–4단계대로 api까지만 띄우고(`docker compose up -d --build --wait api`) 이 절차를 다시 실행한 뒤 web을 띄운다.
 - 바꾼 뒤 점검 스크립트를 돌리는 조건은 "테스트와 점검 스크립트"의 "전체 스택 점검(smoke) 스크립트"를 본다.
 
 ## 개발 모드 실행
@@ -437,8 +437,7 @@ ORIGIN=http://localhost BASE=http://localhost/api/v1 bash backend/scripts/smoke-
 ```
 
 - 모두 통과하면 마지막 줄이 `모든 점검 통과: 27/27`이고 종료 코드는 0이다. 하나라도 실패하면 실패 목록을 출력하고 종료 코드 1로 끝난다.
-- 기본값으로 시드 비밀번호 `Demo-password1!`를 써서 학생 `20260003`·`20260002`, 교수 `P1001`, 관리자 `A1001`로 로그인한다. 그래서 "시드 계정 비밀번호 바꾸기"를 실행하기 전에 돌린다. 바꾼 뒤에는 이 네 계정이 모두 같은 새 비밀번호일 때만 환경 변수 `PASSWORD=<새 비밀번호>`를 더해 실행할 수 있다.
-- 점검 중 학생 `20260002`의 세션은 폐기된다(갱신 토큰 재사용 탐지 점검).
+- 기본값으로 시드 비밀번호 `Demo-password1!`를 써서 학생 `20260003`, 교수 `P1001`, 관리자 `A1001`로 로그인한다. 그래서 "시드 계정 비밀번호 바꾸기"를 실행하기 전에 돌린다. 바꾼 뒤에는 이 세 계정이 모두 같은 새 비밀번호일 때만 환경 변수 `PASSWORD=<새 비밀번호>`를 더해 실행할 수 있다.
 - 처음 실행할 때 교수 `P1001` 담당의 폐강 과목 `SMKCLOSED`를 API로 만든다(시드에 폐강 과목이 없어서). 이 과목은 지우지 않고 남으므로, 공개 서버에서 실행하면 실제 데이터에 `SMKCLOSED`가 생긴다. 스크립트가 만든 수강 내역은 마지막에 스스로 취소하므로 여러 번 실행할 수 있다.
 - `WEB_PORT`를 바꿨다면 두 값도 바꾼다. 예: `ORIGIN=http://localhost:8080 BASE=http://localhost:8080/api/v1`.
 - `BASE`와 `ORIGIN`을 주지 않으면 개발 모드 기본값(`http://localhost:8080/api/v1`, Origin `http://localhost:5173`)을 대상으로 한다. 개발 모드에서는 이 저장소 폴더에서 `bash scripts/smoke-p1.sh`로 실행한다.
