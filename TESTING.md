@@ -81,8 +81,10 @@ generation/worker check before consuming login credentials.
 ## Contract evidence and browser integration
 
 docs/openapi.yaml and src/test/resources/contract/openapi.yaml contain the original from team
-Docs b28a9d1, normalized to LF. SHA-256 is
-4ad2af2c78eea13aa46aac2bec5ac285c136f6048a538121b29df1547ca3e5bc (checked in tests).
+Docs b28a9d1, normalized to LF (original SHA-256 4ad2af2c78eea13aa46aac2bec5ac285c136f6048a538121b29df1547ca3e5bc),
+with the Korean word 계약 replaced by 명세 in 14 description/example lines on 2026-11-22. No path,
+operation, schema, status code or header changed; re-syncing from Docs must reapply this wording change.
+Current SHA-256 is 950b45c12c05bee25b78219b9f302e800aa14eef5cc28d3db8ea282684d2115a (checked in tests).
 OpenApiResponses.verify(pathTemplate, method, response) is a shared test helper for original
 OpenAPI operation/status/content/header checks and JSON Schema 2020-12 response validation.
 AuthIntegrationTest covers success/error responses for login, exchange, refresh, logout,

@@ -24,7 +24,7 @@ class ContractSchemaTest {
     @Test void frozenContractHasTheAgreedSha256() throws Exception {
         try (var input = getClass().getResourceAsStream("/contract/openapi.yaml")) {
             byte[] contract = input.readAllBytes();
-            assertEquals("4ad2af2c78eea13aa46aac2bec5ac285c136f6048a538121b29df1547ca3e5bc",
+            assertEquals("950b45c12c05bee25b78219b9f302e800aa14eef5cc28d3db8ea282684d2115a",
                 java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(contract)));
             assertArrayEquals(contract, java.nio.file.Files.readAllBytes(java.nio.file.Path.of("docs/openapi.yaml")));
         }

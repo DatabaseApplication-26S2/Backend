@@ -5,7 +5,7 @@ import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
- * BE-15 계약 엄격성 검사를 /api/v1/** 에 건다.
+ * BE-15 명세 엄격성 검사를 /api/v1/** 에 건다.
  * ActiveUserInterceptor(order 0, /me/enrollments 입장 검사 E15)보다 뒤에 실행되도록 order를 1로 둔다.
  */
 @Configuration

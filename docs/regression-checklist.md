@@ -81,7 +81,7 @@ bash scripts/smoke-all.sh
 이전 기록: 2026-11-20 김재섭, feature/auth-login(main 3869cde 통합본)에서 smoke 45/45, 일반 테스트 129개 + Redis 테스트 7개 통과.
 이전 기록: 2026-11-20 20:28 백진현, `feature/sub-course-admin-m5`(main `3237fd9` + BE-14), local 프로파일·V900 시드(새 DB), 환경 변수 없이 기본값으로 `smoke-all.sh` 45/45 통과(exit 0).
 
-## 2. 계약 적합성(BE-16, 팀원2)
+## 2. API 명세 적합성(BE-16, 팀원2)
 
 | 항목 | 결과 | 비고 |
 |---|---|---|
