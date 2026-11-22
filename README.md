@@ -349,7 +349,9 @@ Docker가 설치된 Linux 서버에서 같은 `compose.yaml`과 `.env`로 띄운
      docker network connect crs_default <프록시 컨테이너 이름>
      ```
 
-     프록시가 붙어 있으면 `docker compose down`이 `crs_default`를 지우지 못한다(사용 중이라는 경고가 나온다). 그래서 `docker compose down` 전에 먼저 떼고, 스택을 다시 띄운 뒤 위 `docker network connect` 명령으로 다시 붙인다. 다시 붙일 때 `already exists` 오류가 나면 네트워크가 남아 있어 이미 붙어 있다는 뜻이므로 무시한다.
+     `crs_default`에 붙은 프록시 컨테이너는 web뿐 아니라 db(5432), Redis(6379, 인증 없음), api(8080)에도 직접 닿는다. "web만 닿는다"는 경계가 그만큼 넓어지므로 신뢰할 수 있는 프록시 컨테이너에만 쓴다.
+
+     프록시가 붙어 있으면 `docker compose down`이 `crs_default`를 지우지 못한다(사용 중이라는 경고가 나온다). 그래서 `docker compose down` 전에 아래 명령으로 먼저 떼고, 스택을 다시 띄운 뒤 위 `docker network connect` 명령으로 다시 붙인다. 떼지 않고 `down`을 실행했다면 네트워크와 연결이 그대로 남아 있어서, 다시 붙일 때 `already exists` 오류가 난다. 이미 붙어 있다는 뜻이므로 무시한다.
 
      ```sh
      docker network disconnect crs_default <프록시 컨테이너 이름>
