@@ -189,6 +189,7 @@ Set-Content -Path .env -Encoding ascii -Value "JWT_SECRET=$jwt", "POSTGRES_PASSW
 
 - `JWT_SECRET`은 URL-safe Base64(`+` 대신 `-`, `/` 대신 `_`)여야 한다. 일반 Base64 값을 넣으면 api가 `Illegal base64 character`로 기동하지 못한다.
 - `POSTGRES_PASSWORD`는 DB 볼륨을 처음 만들 때만 적용된다. 한 번 띄운 뒤에는 바꾸지 않는다.
+- 위 명령은 `.env` 전체를 새로 쓴다. 스택을 한 번이라도 띄웠다면 다시 실행하지 않는다. `POSTGRES_PASSWORD`가 바뀌어 api가 DB에 접속하지 못한다(`password authentication failed`). 직접 더한 `WEB_PORT` 같은 줄도 지워진다. 처음부터 다시 하려면 먼저 `docker compose down -v`(DB 데이터 삭제)를 실행한 뒤 이 명령을 실행한다.
 - 80번 포트를 다른 프로그램이 쓰고 있으면 `.env`에 다음 두 줄을 더하고, 브라우저에서 `http://localhost:8080`으로 접속한다.
 
   ```text
@@ -377,17 +378,19 @@ API를 컨테이너 없이 Gradle로 직접 띄운다. JDK 21과 Docker가 필�
 macOS·Linux:
 
 ```sh
-docker compose up -d db redis    # PostgreSQL 17(호스트 포트 5433), Redis 7(포트 6379)
-./gradlew bootRun                # 기본 프로파일: local
+docker compose up -d --wait db redis    # PostgreSQL 17(호스트 포트 5433), Redis 7(포트 6379)
+./gradlew bootRun                       # 기본 프로파일: local
 ```
 
 Windows(PowerShell):
 
 ```powershell
-docker compose up -d db redis    # PostgreSQL 17(호스트 포트 5433), Redis 7(포트 6379)
-.\gradlew.bat bootRun            # 기본 프로파일: local
+docker compose up -d --wait db redis    # PostgreSQL 17(호스트 포트 5433), Redis 7(포트 6379)
+.\gradlew.bat bootRun                   # 기본 프로파일: local
 ```
 
+- 이 폴더의 `compose.yaml`은 PostgreSQL(호스트 포트 5433, 비밀번호 `crs`)과 Redis(포트 6379, 인증 없음)를 PC의 모든 네트워크 인터페이스에 공개한다. 같은 네트워크의 다른 PC도 접속할 수 있으므로 신뢰할 수 있는 네트워크에서만 쓴다.
+- `--wait`는 db 컨테이너의 healthcheck(`pg_isready`)가 통과할 때까지 기다린 뒤 끝난다. 그 뒤에 `bootRun`을 실행해야 Flyway가 PostgreSQL 준비 전에 접속하지 않는다. 처음 띄울 때 `bootRun`이 DB 연결 오류로 멈추면 한 번 더 실행한다.
 - `local` 프로파일은 시드(V900)를 적용하고, Frontend 저장소의 개발 서버 출처 `http://localhost:5173`을 허용한다(`APP_FRONTEND_ORIGIN` 기본값).
 - API는 `http://localhost:8080`에서 뜬다. 확인: `curl http://localhost:8080/actuator/health`(Windows는 `curl.exe`) → 본문에 `"status":"UP"`이 들어 있다.
 - `demo` 프로파일로 띄우기: `./gradlew bootRun --args='--spring.profiles.active=demo'` (Windows는 `.\gradlew.bat bootRun --args='--spring.profiles.active=demo'`).
@@ -473,8 +476,8 @@ ORIGIN=http://localhost BASE=http://localhost/api/v1 bash backend/scripts/smoke-
 | `up` 직후 `.env에 JWT_SECRET을 설정하세요` 같은 오류 | `.env`가 `compose.yaml`과 같은 폴더에 없거나 값이 비었다(Windows에서는 `.env.txt`로 저장된 경우도 있다) | "4. `.env` 만들기"를 같은 폴더에서 다시 실행한다 |
 | `up` 중 80번 포트를 열 수 없다는 오류(포트 사용 중) | 다른 프로그램이 80번 포트를 쓴다(Windows에서 흔하다) | `.env`에 `WEB_PORT=8080`, `APP_FRONTEND_ORIGIN=http://localhost:8080`을 넣고 `docker compose up -d --build --wait`, 브라우저는 `http://localhost:8080` |
 | 로그인이 HTTP 403, 응답 본문 `code`가 `E02`, `reason`이 `CSRF_CHECK_FAILED` | 브라우저 출처(예: `http://127.0.0.1`, 다른 포트)가 `APP_FRONTEND_ORIGIN`과 다르다 | `APP_FRONTEND_ORIGIN`에 적은 주소 그대로 접속하거나, `.env`를 고치고 `docker compose up -d --wait` |
-| `up --wait`가 실패하고 api가 healthy가 되지 않는다. `docker compose logs api`에 `Illegal base64 character` | `JWT_SECRET`에 일반 Base64 문자 `+`, `/`가 있다 | 4단계 명령으로 `JWT_SECRET`을 다시 만들고 `docker compose up -d --wait` |
-| api 로그에 `JWT secret must contain at least 32 bytes` | `JWT_SECRET`이 너무 짧다 | 4단계 명령으로 다시 만든다(48바이트) |
+| `up --wait`가 실패하고 api가 healthy가 되지 않는다. `docker compose logs api`에 `Illegal base64 character` | `JWT_SECRET`에 일반 Base64 문자 `+`, `/`가 있다 | 먼저 `docker compose down -v`(DB 데이터 삭제)를 실행하고, 4단계 명령으로 `.env`를 다시 만든 뒤 `docker compose up -d --build --wait` |
+| api 로그에 `JWT secret must contain at least 32 bytes` | `JWT_SECRET`이 너무 짧다 | 먼저 `docker compose down -v`(DB 데이터 삭제)를 실행하고, 4단계 명령으로 `.env`를 다시 만든 뒤(48바이트) `docker compose up -d --build --wait` |
 | api 로그에 `password authentication failed` | DB 볼륨을 만든 뒤 `.env`의 `POSTGRES_PASSWORD`를 바꿨다 | 원래 값으로 되돌린다. 데이터를 버려도 되면 `docker compose down -v` 후 `docker compose up -d --build --wait` |
 | 빌드가 `Killed` 또는 exit code 137로 멈춘다 | Docker에 할당된 메모리가 부족하다 | Docker 메모리를 4 GB 이상으로 늘리고 다시 빌드한다. macOS: Docker Desktop 설정 > Resources > Memory. Windows(WSL 2): `%UserProfile%\.wslconfig`의 `[wsl2]` 아래에 `memory=4GB`를 쓰고 `wsl --shutdown` 후 Docker Desktop을 다시 켠다 |
 | `http://localhost`에서는 로그인되는데 다른 PC나 IP 주소로 HTTP 접속하면 로그인이 유지되지 않는다 | 인증 쿠키가 `Secure`라서 localhost 밖에서는 HTTPS가 필요하다 | "서버에 배포할 때"대로 HTTPS 리버스 프록시를 두고 `APP_FRONTEND_ORIGIN=https://<도메인>`으로 설정한다 |
