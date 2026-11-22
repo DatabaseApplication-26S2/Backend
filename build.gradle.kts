@@ -55,7 +55,7 @@ tasks.named<Test>("test") {
 }
 
 tasks.register<Test>("redisTest") {
-	description = "REDIS_TEST_PORT(기본 16379)의 Redis로 통합 테스트를 실행한다."
+	description = "redis 태그 통합 테스트를 실행한다. Testcontainers가 Redis 7과 PostgreSQL 17을 임시 포트로 띄운다(Docker 필요)."
 	group = "verification"
 	testClassesDirs = sourceSets["test"].output.classesDirs
 	classpath = sourceSets["test"].runtimeClasspath

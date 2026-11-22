@@ -415,7 +415,7 @@ docker compose up -d --wait db redis    # PostgreSQL 17(호스트 포트 5433), 
 ```
 
 - 이 폴더의 `compose.yaml`은 PostgreSQL(호스트 포트 5433, 비밀번호 `crs`)과 Redis(포트 6379, 인증 없음)를 PC의 모든 네트워크 인터페이스에 공개한다. 같은 네트워크의 다른 PC도 접속할 수 있으므로 신뢰할 수 있는 네트워크에서만 쓴다.
-- `--wait`는 db 컨테이너의 healthcheck(`pg_isready`)가 통과할 때까지 기다린 뒤 끝난다. 그 뒤에 `bootRun`을 실행해야 Flyway가 PostgreSQL 준비 전에 접속하지 않는다. 처음 띄울 때 `bootRun`이 DB 연결 오류로 멈추면 한 번 더 실행한다.
+- `--wait`는 db 컨테이너의 healthcheck(`pg_isready -h 127.0.0.1`)가 통과할 때, 곧 PostgreSQL이 TCP 접속을 받기 시작한 뒤에 끝난다. 그래서 바로 이어서 `bootRun`을 실행해도 Flyway가 DB에 접속할 수 있다.
 - `local` 프로파일은 시드(V900)를 적용하고, Frontend 저장소의 개발 서버 출처 `http://localhost:5173`을 허용한다(`APP_FRONTEND_ORIGIN` 기본값).
 - API는 `http://localhost:8080`에서 뜬다. 확인: `curl http://localhost:8080/actuator/health`(Windows는 `curl.exe`) → 본문에 `"status":"UP"`이 들어 있다.
 - `demo` 프로파일로 띄우기: `./gradlew bootRun --args='--spring.profiles.active=demo'` (Windows는 `.\gradlew.bat bootRun --args='--spring.profiles.active=demo'`).
